@@ -46,7 +46,7 @@ jobs:
       - name: Format check
         run: python -m ruff format --check .
       - name: Type check
-        run: python -m mypy helix_token_cost_manager
+        run: python -m mypy samsarix_token_cost_manager
       - name: Test
         run: python -m pytest
 
@@ -74,5 +74,5 @@ jobs:
         run: |
           python -m pip install --force-reinstall --no-deps dist/*.whl
           cd "$(mktemp -d)"
-          helix-cost --version
-          python -c "from helix_token_cost_manager import CostManager; print(CostManager.__name__)"
+          samsarix-cost --version
+          python -c "from samsarix_token_cost_manager import CostManager; print(CostManager.__name__)"

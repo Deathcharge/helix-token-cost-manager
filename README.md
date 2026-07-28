@@ -1,10 +1,10 @@
-# Helix Token Cost Manager
+# Samsarix Token Cost Manager
 
-Helix Token Cost Manager is a local-first Python library and CLI for turning provider-reported LLM token usage into auditable USD cost records. It stores explicit, time-versioned prices and immutable usage events in SQLite, produces exact spend summaries, and checks daily or monthly budgets before a model call.
+Samsarix Token Cost Manager is a local-first Python library and CLI from Samsarix LLC for turning provider-reported LLM token usage into auditable USD cost records. It stores explicit, time-versioned prices and immutable usage events in SQLite, produces exact spend summaries, and checks daily or monthly budgets before a model call.
 
-It is for developers and small teams that need cost accounting without adopting an LLM gateway, hosted observability service, or private Helix infrastructure. It never calls an LLM and has no runtime dependencies.
+It is for developers and small teams that need cost accounting without adopting an LLM gateway, hosted observability service, or private infrastructure. It never calls an LLM and has no runtime dependencies.
 
-> **Maturity:** `0.1.0` release candidate. The core local workflow is implemented and tested; package publication, license review, and validation on hosted CI remain owner-controlled release gates.
+> **Maturity:** `0.1.0` release candidate. The core local workflow is implemented and tested; hosted CI, the initial release tag, and package publication remain owner-controlled release gates.
 
 ## What it solves
 
@@ -21,18 +21,18 @@ It is for developers and small teams that need cost accounting without adopting 
 Prerequisites: Python 3.10 or newer and Git.
 
 ```bash
-git clone https://github.com/Deathcharge/helix-token-cost-manager.git
-cd helix-token-cost-manager
+git clone https://github.com/Deathcharge/samsarix-token-cost-manager.git
+cd samsarix-token-cost-manager
 python -m venv .venv
 python -m pip install .
 ```
 
-Activate the environment first if your shell does not expose its installed scripts. You can also replace `helix-cost` below with `python -m helix_token_cost_manager`.
+Activate the environment first if your shell does not expose its installed scripts. You can also replace `samsarix-cost` below with `python -m samsarix_token_cost_manager`.
 
 1. Add explicit pricing. These are illustrative rates for a fictional model, not a statement of any provider's current price:
 
    ```bash
-   helix-cost --db costs.sqlite3 price set \
+   samsarix-cost --db costs.sqlite3 price set \
      --provider example \
      --model model-v1 \
      --input 2.50 \
@@ -44,7 +44,7 @@ Activate the environment first if your shell does not expose its installed scrip
 2. Record provider-reported usage:
 
    ```bash
-   helix-cost --db costs.sqlite3 record \
+   samsarix-cost --db costs.sqlite3 record \
      --provider example \
      --model model-v1 \
      --input-tokens 1000000 \
@@ -63,7 +63,7 @@ Activate the environment first if your shell does not expose its installed scrip
 3. Review spend:
 
    ```bash
-   helix-cost --db costs.sqlite3 report --group-by model
+   samsarix-cost --db costs.sqlite3 report --group-by model
    ```
 
    ```text
@@ -72,17 +72,17 @@ Activate the environment first if your shell does not expose its installed scrip
    example/model-v1  1         1000000  500000  100000        $7.525
    ```
 
-The database is created automatically. `helix-cost init` is available when an explicit initialization step is preferable.
+The database is created automatically. `samsarix-cost init` is available when an explicit initialization step is preferable.
 
 ## Check a budget before a call
 
 ```bash
-helix-cost --db costs.sqlite3 budget set \
+samsarix-cost --db costs.sqlite3 budget set \
   --amount 25 \
   --period monthly \
   --project demo
 
-helix-cost --db costs.sqlite3 budget check \
+samsarix-cost --db costs.sqlite3 budget check \
   --provider example \
   --model model-v1 \
   --input-tokens 2000 \
@@ -95,13 +95,13 @@ helix-cost --db costs.sqlite3 budget check \
 For scripts, put `--json` before the command:
 
 ```bash
-helix-cost --db costs.sqlite3 --json report --month 2026-07 --group-by project
+samsarix-cost --db costs.sqlite3 --json report --month 2026-07 --group-by project
 ```
 
 ## Python API
 
 ```python
-from helix_token_cost_manager import CostManager
+from samsarix_token_cost_manager import CostManager
 
 with CostManager("costs.sqlite3") as costs:
     costs.set_price(
@@ -123,7 +123,7 @@ with CostManager("costs.sqlite3") as costs:
     print(result.event.cost.total_usd)
 ```
 
-The deliberate public API is exported from `helix_token_cost_manager`: `CostManager`, its value objects, and expected exception types. Provider SDKs are intentionally not dependencies; pass their returned usage counts into `record`.
+The deliberate public API is exported from `samsarix_token_cost_manager`: `CostManager`, its value objects, and expected exception types. Provider SDKs are intentionally not dependencies; pass their returned usage counts into `record`.
 
 ## Pricing and usage contract
 
@@ -137,10 +137,10 @@ The deliberate public API is exported from `helix_token_cost_manager`: `CostMana
 
 ## Configuration and persistence
 
-`--db PATH` chooses the SQLite database. Without it, `HELIX_COST_DB` is used. Otherwise the default is:
+`--db PATH` chooses the SQLite database. Without it, `SAMSARIX_COST_DB` is used. Otherwise the default is:
 
-- Windows: `%LOCALAPPDATA%\helix-token-cost-manager\costs.sqlite3`
-- macOS/Linux: `$XDG_DATA_HOME/helix-token-cost-manager/costs.sqlite3`, or `~/.local/share/...`
+- Windows: `%LOCALAPPDATA%\samsarix-token-cost-manager\costs.sqlite3`
+- macOS/Linux: `$XDG_DATA_HOME/samsarix-token-cost-manager/costs.sqlite3`, or `~/.local/share/...`
 
 SQLite WAL mode and a five-second busy timeout support concurrent local processes. One `CostManager` instance also serializes access between threads. For a filesystem backup, close every connection before copying the database and its sidecar files. For an online backup, use SQLite's backup API (available as `sqlite3.Connection.backup()` in Python) or `VACUUM INTO`; do not sequentially copy live database and WAL files.
 
@@ -149,15 +149,15 @@ The package stores provider/model names, token counts, timestamps, optional requ
 ## Command reference
 
 ```text
-helix-cost init
-helix-cost price set|list
-helix-cost estimate
-helix-cost record
-helix-cost report
-helix-cost budget set|check
+samsarix-cost init
+samsarix-cost price set|list
+samsarix-cost estimate
+samsarix-cost record
+samsarix-cost report
+samsarix-cost budget set|check
 ```
 
-Run `helix-cost --help` or any subcommand with `--help` for complete arguments. Human-readable output goes to stdout, expected error messages go to stderr, and `--json` provides stable machine-readable output.
+Run `samsarix-cost --help` or any subcommand with `--help` for complete arguments. Human-readable output goes to stdout, expected error messages go to stderr, and `--json` provides stable machine-readable output.
 
 ## Development and verification
 
@@ -168,7 +168,7 @@ python -m venv .venv
 python -m pip install --requirement requirements-dev.txt
 python -m ruff check .
 python -m ruff format --check .
-python -m mypy helix_token_cost_manager
+python -m mypy samsarix_token_cost_manager
 python -m pytest
 python -m build
 python -m twine check dist/*
@@ -209,10 +209,12 @@ These are deliberate release boundaries. Planned work is prioritized in [docs/PR
 
 ## Distribution and project status
 
-The simplest release path is a source distribution and pure-Python wheel published to PyPI after owner approval. The name `helix-token-cost-manager` returned no PyPI project on July 28, 2026, but availability is not reserved until publication. No package has been published by this work.
+The simplest release path is a source distribution and pure-Python wheel published to PyPI after owner approval. The name `samsarix-token-cost-manager` returned no PyPI project on July 28, 2026, but availability is not reserved until publication. No package has been published by this work.
 
 Contributions are welcome through GitHub issues and pull requests; see [CONTRIBUTING.md](CONTRIBUTING.md). The productization decisions and exact baseline are recorded in [docs/PRODUCTIZATION.md](docs/PRODUCTIZATION.md).
 
-## License status
+## License, attribution, and support
 
-The repository `LICENSE` file is the only supplied license text. It is a customized Business Source License 1.1 document with production-use terms and a future Apache-2.0 change license; it is not MIT. It names a different “Licensed Work,” and its fixed June 16, 2027 change date does not clearly align with its separate three-years-after-first-distribution language. The owner should obtain legal review before publishing or making release claims. Package metadata intentionally does not add an OSI-approved classifier or a speculative SPDX expression.
+Copyright 2026 Samsarix LLC. The software and documentation are licensed under the [Apache License 2.0](LICENSE), with attribution recorded in [NOTICE](NOTICE). Apache-2.0 permits commercial use and modification subject to its terms, preserves applicable notices, and includes an express patent grant. It does not license Samsarix names or marks; see [TRADEMARKS.md](TRADEMARKS.md).
+
+For general inquiries, email `contact@samsarix.com`. For product support, email `support@samsarix.com`. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).

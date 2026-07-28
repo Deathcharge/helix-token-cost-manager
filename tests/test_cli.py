@@ -1,3 +1,6 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """Command-level coverage for the documented primary journey."""
 
 import json
@@ -9,7 +12,7 @@ from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 
-from helix_token_cost_manager.cli import main
+from samsarix_token_cost_manager.cli import main
 
 
 @dataclass(frozen=True)
@@ -60,14 +63,14 @@ def configure_price(database: Path) -> None:
 
 def test_help_and_version_are_real_process_entry_points() -> None:
     help_result = subprocess.run(
-        [sys.executable, "-m", "helix_token_cost_manager", "--help"],
+        [sys.executable, "-m", "samsarix_token_cost_manager", "--help"],
         check=True,
         capture_output=True,
         text=True,
         env={**os.environ, "PYTHONUTF8": "1"},
     )
     version_result = subprocess.run(
-        [sys.executable, "-m", "helix_token_cost_manager", "--version"],
+        [sys.executable, "-m", "samsarix_token_cost_manager", "--version"],
         check=True,
         capture_output=True,
         text=True,
@@ -76,7 +79,7 @@ def test_help_and_version_are_real_process_entry_points() -> None:
 
     assert "price" in help_result.stdout
     assert "budget" in help_result.stdout
-    assert version_result.stdout.strip() == "helix-cost 0.1.0"
+    assert version_result.stdout.strip() == "samsarix-cost 0.1.0"
 
 
 def test_primary_journey_and_json_contract(tmp_path: Path) -> None:

@@ -1,3 +1,6 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """Local-first, provider-neutral token usage and cost accounting."""
 
 from .exceptions import (

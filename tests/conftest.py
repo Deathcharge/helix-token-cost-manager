@@ -1,10 +1,13 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared pytest fixtures."""
 
 from pathlib import Path
 
 import pytest
 
-from helix_token_cost_manager import CostManager
+from samsarix_token_cost_manager import CostManager
 
 
 @pytest.fixture

@@ -3,14 +3,18 @@ requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "helix-token-cost-manager"
+name = "samsarix-token-cost-manager"
 dynamic = ["version"]
 description = "Local-first, provider-neutral LLM token usage and cost accounting"
 readme = "README.md"
 requires-python = ">=3.10"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
-    {name = "Helix Collective", email = "collective@helix.ai"},
+    {name = "Samsarix LLC", email = "contact@samsarix.com"},
+]
+maintainers = [
+    {name = "Samsarix LLC", email = "support@samsarix.com"},
 ]
 keywords = ["llm", "tokens", "cost", "budget", "sqlite"]
 classifiers = [
@@ -27,18 +31,18 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
-helix-cost = "helix_token_cost_manager.cli:main"
+samsarix-cost = "samsarix_token_cost_manager.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Deathcharge/helix-token-cost-manager"
-Repository = "https://github.com/Deathcharge/helix-token-cost-manager.git"
-Issues = "https://github.com/Deathcharge/helix-token-cost-manager/issues"
+Homepage = "https://www.samsarix.com"
+Repository = "https://github.com/Deathcharge/samsarix-token-cost-manager.git"
+Issues = "https://github.com/Deathcharge/samsarix-token-cost-manager/issues"
 
 [tool.setuptools.packages.find]
-include = ["helix_token_cost_manager*"]
+include = ["samsarix_token_cost_manager*"]
 
 [tool.setuptools.dynamic]
-version = {attr = "helix_token_cost_manager.__version__"}
+version = {attr = "samsarix_token_cost_manager.__version__"}
 
 [tool.ruff]
 line-length = 100
@@ -56,7 +60,7 @@ warn_unreachable = true
 addopts = [
     "--strict-config",
     "--strict-markers",
-    "--cov=helix_token_cost_manager",
+    "--cov=samsarix_token_cost_manager",
     "--cov-branch",
     "--cov-report=term-missing",
     "--cov-fail-under=90",
@@ -65,7 +69,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["helix_token_cost_manager"]
+source = ["samsarix_token_cost_manager"]
 
 [tool.coverage.report]
 show_missing = true

@@ -1,3 +1,6 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """Public exception hierarchy for the token cost manager."""
 
 

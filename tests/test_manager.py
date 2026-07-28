@@ -1,3 +1,6 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """API-level coverage for exact accounting and persistence behavior."""
 
 import os
@@ -11,14 +14,14 @@ from threading import Barrier
 
 import pytest
 
-from helix_token_cost_manager import (
+from samsarix_token_cost_manager import (
     CostManager,
     DuplicateRequestError,
     PriceNotFoundError,
     ValidationError,
 )
-from helix_token_cost_manager.manager import default_database_path
-from helix_token_cost_manager.models import (
+from samsarix_token_cost_manager.manager import default_database_path
+from samsarix_token_cost_manager.models import (
     format_timestamp,
     money,
     parse_timestamp,
@@ -347,7 +350,7 @@ def test_manager_lifecycle_and_environment_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     configured = tmp_path / "configured.sqlite3"
-    monkeypatch.setenv("HELIX_COST_DB", str(configured))
+    monkeypatch.setenv("SAMSARIX_COST_DB", str(configured))
     assert default_database_path() == configured
 
     manager = CostManager()

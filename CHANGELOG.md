@@ -4,7 +4,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## Unreleased
 
-- Owner gates: confirm the repository license text, choose the initial release tag, and approve package publication.
+- Owner gates: obtain green hosted CI, choose the initial release tag, and approve package publication.
 
 ### Added
 
@@ -12,7 +12,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Provider/model/project/day/month reporting with stable JSON output.
 - Global and per-project daily/monthly budget checks.
 - Idempotent request IDs and conflict detection.
-- Dependency-free Python API and `helix-cost` CLI.
+- Dependency-free Python API and `samsarix-cost` CLI.
 - Cross-platform CI coverage, local tests, type checks, lint/format policy, package verification, security guidance, and productization documentation.
 
 ### Security
@@ -20,6 +20,11 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Pinned GitHub Actions to verified release commits and minimized workflow permissions and credential persistence.
 - Raised the supported floor to maintained Python 3.10+ and upgraded pytest/setuptools past identified security advisories.
 - Added bounded scalar validation, terminal-control rejection, parameterized SQL regression coverage, private local database permissions, and fail-closed schema/price behavior.
+
+### Changed
+
+- Rebranded the distribution, Python package, CLI, configuration paths, metadata, and documentation from Helix to Samsarix LLC before the first public release.
+- Replaced the mismatched customized BSL text with standard Apache-2.0 licensing, a Samsarix `NOTICE`, citation metadata, and explicit trademark guidance.
 
 ### Removed
 

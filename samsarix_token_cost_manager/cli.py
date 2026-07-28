@@ -1,3 +1,6 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """Command-line interface for local token cost accounting."""
 
 from __future__ import annotations
@@ -27,14 +30,14 @@ EXIT_BUDGET_EXCEEDED = 3
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="helix-cost",
+        prog="samsarix-cost",
         description=("Track provider-reported LLM token usage and calculate exact local USD cost."),
     )
     parser.add_argument(
         "--db",
         type=Path,
         default=None,
-        help=("SQLite database path (default: HELIX_COST_DB or the platform data directory)"),
+        help=("SQLite database path (default: SAMSARIX_COST_DB or the platform data directory)"),
     )
     parser.add_argument(
         "--json",
@@ -159,7 +162,7 @@ def _format_usd(value: Decimal) -> str:
 
 def _render_prices(prices: Sequence[Any]) -> None:
     if not prices:
-        print("No model prices configured. Add one with `helix-cost price set`.")
+        print("No model prices configured. Add one with `samsarix-cost price set`.")
         return
     headers = ("PROVIDER", "MODEL", "INPUT/1M", "OUTPUT/1M", "CACHED/1M", "EFFECTIVE")
     rows = [

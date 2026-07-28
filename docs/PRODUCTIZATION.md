@@ -14,7 +14,7 @@ The original source remains recoverable from Git history. The non-standalone pro
 
 ## Chosen product definition
 
-**Product:** a dependency-free, local-first Python library and CLI for explicit LLM token-price management, immutable usage-cost recording, exact spend reporting, and pre-call budget checks.
+**Product:** Samsarix Token Cost Manager, a dependency-free, local-first Python library and CLI from Samsarix LLC for explicit LLM token-price management, immutable usage-cost recording, exact spend reporting, and pre-call budget checks.
 
 **Target user:** an application developer or small team receiving token counts from one or more provider SDKs who wants auditable cost data without deploying a gateway or hosted observability system.
 
@@ -32,9 +32,15 @@ The original source remains recoverable from Git history. The non-standalone pro
 - [GitHub Actions' maintained actions](https://github.com/actions/setup-python/releases) were at `setup-python` v6 in the bounded July 2026 check; CI pins the reviewed `checkout` v6.0.2 and `setup-python` v6.2.0 release commits instead of mutable major tags.
 - The [Python release-status table](https://devguide.python.org/versions/) marks Python 3.9 end-of-life. The supported floor is Python 3.10 so the test stack can use pytest 9.0.3, which fixes [GHSA-6w46-j5rx-g56g](https://github.com/advisories/GHSA-6w46-j5rx-g56g).
 - The isolated build backend is pinned to setuptools 83.0.0, the fixed boundary for its [source-distribution exclusion bypass advisory](https://github.com/advisories/GHSA-h35f-9h28-mq5c).
-- The PyPI JSON endpoint for `helix-token-cost-manager` returned `404` on July 28, 2026. That is evidence only that no project was visible then, not a reservation or permission to publish.
+- The PyPI JSON endpoint for `samsarix-token-cost-manager` returned `404` on July 28, 2026. That is evidence only that no project was visible then, not a reservation or permission to publish.
 
 No product-market fit or validated commercial demand is claimed.
+
+## Ownership, branding, and licensing decision
+
+On July 28, 2026, the owner identified the operating company as **Samsarix LLC** and designated `contact@samsarix.com` and `support@samsarix.com` as the working contact addresses. Because no package had been published, the distribution, import package, CLI, environment variable, platform data path, metadata, and documentation were renamed together rather than preserving a misleading Helix compatibility surface.
+
+The owner asked for the strongest practical licensing fit for attribution and protection. The repository now uses the unmodified [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt), a Samsarix `NOTICE`, SPDX package metadata, citation metadata, and separate trademark guidance. Apache-2.0 is [OSI approved](https://opensource.org/licenses), preserves applicable copyright/attribution notices, includes an express patent grant, and does not grant trademark rights. The previous customized BSL was removed because it named another work, contained conflicting change timing, restricted production adoption, and the BSL steward explicitly states that BSL 1.1 is not an Open Source license. This is an engineering/product recommendation, not legal advice; Samsarix LLC should have counsel review its broader IP and trademark program when commercially material.
 
 ## Key product and architecture decisions
 
@@ -95,14 +101,14 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 - [x] Add empty, success, expected-error, duplicate, and budget-denial states.
 - [x] Add WAL, busy timeout, thread serialization, and newer-schema refusal.
 - [x] Eliminate network, secret, prompt-logging, and unbounded API-cost paths from the product.
-- [x] Correct MIT/production-ready claims without changing the owner-controlled license text.
+- [x] Replace misleading MIT/production-ready claims and the mismatched customized BSL with standard Apache-2.0 terms owned and attributed to Samsarix LLC.
 - [x] Add build/install shape verification and accurate contributor guidance.
 - [x] Remove the vulnerable pytest 8 development pin by setting the supported floor to maintained Python 3.10+ and pytest 9.0.3.
 - [x] Upgrade the isolated build backend to setuptools 83.0.0 to close its source-distribution exclusion bypass advisory.
 - [x] Replace unsafe live-WAL copy guidance with SQLite's online backup API or closed-connection copying.
 - [x] Pin third-party CI actions to reviewed release commit hashes.
 - [x] Reject terminal control/formatting characters and harden large Decimal aggregates and final-calendar-period bounds.
-- [ ] Obtain owner/legal confirmation that the customized `LICENSE` applies to this repository; its `Licensed Work` field says “Helix Licensing System,” and its fixed change date does not clearly align with its separate three-year timing language.
+- [x] Record Samsarix LLC ownership/contact metadata and include `LICENSE`, `NOTICE`, `CITATION.cff`, and trademark guidance in the source distribution.
 - [ ] Run the committed CI workflow on GitHub-hosted Linux, Windows, and macOS runners.
 
 ### P2 — valuable post-`0.1` work
@@ -134,15 +140,15 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 
 ## Release acceptance criteria
 
-- Fresh isolated installation succeeds without access to another Helix repository.
-- Wheel contains and imports the package and exposes `helix-cost --version`.
+- Fresh isolated installation succeeds without access to any sibling/private repository.
+- Wheel contains and imports the package and exposes `samsarix-cost --version`.
 - The documented price → record → report → budget journey reproduces exactly.
 - Duplicate request retries are idempotent and conflicting reuse fails.
 - Missing prices and newer schemas fail closed with actionable errors.
 - Lint, format, type check, tests with at least 90% branch-aware coverage, build, metadata check, wheel install, and example all pass.
 - No runtime dependency, secret requirement, external endpoint, network call, or locally actionable P0 remains.
 - Documentation describes implemented behavior and current maturity only.
-- Owner resolves the license applicability and timing questions and approves the version/tag/publication decision.
+- Owner approves the version/tag/publication decision.
 
 ## Completed work
 
@@ -150,14 +156,13 @@ The repository now implements the chosen vertical slice end to end: local setup,
 
 ## Deferred and blocked work
 
-### Owner-, legal-, credential-, or production-blocked
+### Owner-, credential-, or production-blocked
 
-- **License applicability and timing:** owner/legal counsel must confirm or replace the current `LICENSE`; code work cannot safely infer which work it licenses or reconcile its two change-date formulations.
 - **Release identity:** owner chooses whether `0.1.0` is the initial public tag and whether the package name/branding are final.
 - **PyPI publication:** owner must control the PyPI organization/account, trusted publisher, and release approval. No credentials or external account were created.
 - **Hosted CI evidence:** the committed workflow requires a push/PR on GitHub; local work cannot claim those runner results.
 
-There are no required provider credentials, production endpoints, databases, domains, or Helix services.
+There are no required provider credentials, production endpoints, databases, domains, or Samsarix services.
 
 ## Final local verification evidence
 
@@ -166,13 +171,13 @@ Verification was run on Windows from the final candidate worktree. Generated env
 | Gate | Result |
 |---|---|
 | Python 3.11 lint/format/type checks | Ruff lint and format checks passed; strict mypy passed for all six package modules. |
-| Python 3.11 tests | `50 passed, 1 skipped`; the skip is the POSIX-permission assertion on Windows; branch-aware coverage `94.39%` (required `90%`). |
+| Python 3.11 tests | `50 passed, 1 skipped`; the skip is the POSIX-permission assertion on Windows; branch-aware coverage `94.19%` (required `90%`). |
 | Python 3.13 tests and quality | `50 passed, 1 skipped`; coverage `94.65%`; Ruff, strict mypy, and `pip check` passed. |
 | Python 3.10 dependency resolution | `pip install --dry-run --python-version 3.10` resolved the declared direct tool versions. No local Python 3.10 interpreter was available. |
 | Build | `python -m build` produced the sdist and `py3-none-any` wheel using isolated setuptools 83.0.0; the wheel was built from the sdist. |
-| Metadata and content | `twine check` passed both artifacts. The wheel contained all six modules, the console entry point, license, and metadata; it declared Python `>=3.10` and no runtime dependencies. The sdist contained the security, productization, example, and test files. |
+| Metadata and content | `twine check` passed both artifacts. The wheel contained all six renamed modules, the Samsarix console entry point, Apache license and notice, and metadata; it declared Python `>=3.10` and no runtime dependencies. The sdist also contained the citation, trademark, security, productization, example, and test files. |
 | Installed journey | A fresh virtual environment installed the wheel with `--no-deps`; `pip check`, both CLI entry points, package metadata/import, price setup, a `$7.525` usage record/report, budget denial exit `3`, and `examples/quickstart.py` all passed from outside the source directory. |
-| Security hygiene | Credential-pattern and local-link checks passed. `pip-audit 2.10.0` found no known advisories in the exact direct development pins; pytest and setuptools advisories discovered during review were remediated. The transitive contributor graph was not independently audited to completion or hash-locked, so no stronger claim is made. |
+| Security hygiene | Bandit, credential-pattern, and local-link checks passed. `pip-audit 2.10.0` found no known advisories in the exact direct development pins; pytest and setuptools advisories discovered during review were remediated. The transitive contributor graph was not independently audited to completion or hash-locked, so no stronger claim is made. |
 | Hosted matrix | Not run locally. The workflow covers Python 3.10, 3.11, and 3.14 on Linux plus Python 3.11 on Windows and macOS; owner push/PR evidence remains required. |
 
 ## Known risks
@@ -182,7 +187,6 @@ Verification was run on Windows from the final candidate worktree. Generated env
 - Anyone with write access to the SQLite files can tamper with accounting data; the package does not provide signatures or an append-only external audit log.
 - Labels can contain sensitive business identifiers if callers misuse them.
 - SQLite durability and concurrency guarantees depend on a supported local filesystem and a consistent backup made with closed connections or SQLite's online backup facilities.
-- The current license applicability and timing ambiguities could block lawful distribution even when engineering checks pass.
 - Direct contributor tools are pinned, but transitive tools and hosted runner images are not hash-locked; this limits build reproducibility and is tracked as post-`0.1` hardening.
 
 ## Security, privacy, reliability, and operating cost
@@ -195,8 +199,8 @@ Software operating cost is effectively zero beyond local disk/CPU. The package d
 
 ## Distribution and sustainability model
 
-The smallest distribution is a pure-Python wheel and source distribution on PyPI, plus direct installation from a tagged GitHub release. A plausible sustainability model is owner-funded maintenance, sponsorship, paid integration/support, or commercial licensing already contemplated by the repository license. No willingness-to-pay or revenue viability has been validated, and the local package itself has no hosted marginal cost.
+The smallest distribution is a pure-Python wheel and source distribution on PyPI, plus direct installation from a tagged GitHub release. A plausible sustainability model is Samsarix-funded maintenance, sponsorship, or paid integration/support while keeping the library itself Apache-2.0. No willingness-to-pay or revenue viability has been validated, and the local package itself has no hosted marginal cost.
 
 ## Release disposition
 
-**Local engineering acceptance passed; public release is blocked on named external gates.** The complete primary journey, tests, security hardening, artifact build/install, and local start paths passed. Publication still requires owner/legal resolution of the license applicability and timing ambiguities, green hosted CI, version/tag approval, and authorized package publication. No release or external account change was made by this work.
+**Local engineering acceptance passed; public release awaits operational gates.** The complete primary journey, tests, security hardening, artifact build/install, and local start paths passed. The license/ownership blocker is resolved through Samsarix LLC metadata and Apache-2.0. Publication still requires green hosted CI, version/tag approval, and authorized PyPI publication.

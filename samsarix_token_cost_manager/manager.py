@@ -1,3 +1,6 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """SQLite-backed, local-first token usage and cost accounting."""
 
 from __future__ import annotations
@@ -43,14 +46,14 @@ MILLION = Decimal(1_000_000)
 def default_database_path() -> Path:
     """Return the platform-appropriate default database path."""
 
-    configured = os.environ.get("HELIX_COST_DB")
+    configured = os.environ.get("SAMSARIX_COST_DB")
     if configured:
         return Path(configured).expanduser()
     if os.name == "nt":
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
         root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return root / "helix-token-cost-manager" / "costs.sqlite3"
+    return root / "samsarix-token-cost-manager" / "costs.sqlite3"
 
 
 class CostManager:
@@ -116,7 +119,8 @@ class CostManager:
 
         if self._connection is None:
             self.open()
-        assert self._connection is not None
+        if self._connection is None:
+            raise RuntimeError("database connection did not initialize")
         return self._connection
 
     def _initialize_schema(self) -> None:
@@ -283,7 +287,7 @@ class CostManager:
             raise PriceNotFoundError(
                 "no price found for "
                 f"{normalized_provider}/{normalized_model} at {format_timestamp(timestamp)}; "
-                "add one with `helix-cost price set`"
+                "add one with `samsarix-cost price set`"
             )
         return self._price_from_row(row)
 
@@ -552,11 +556,12 @@ class CostManager:
             clauses.append("project = ?")
             parameters.append(normalized_project)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        query = (
+        # Query structure is limited to the fixed clauses above; all values remain bound.
+        usage_select = (
             "SELECT occurred_at, provider, model, project, input_tokens, "
             "output_tokens, cached_input_tokens, total_cost FROM usage_events"
-            f"{where} ORDER BY occurred_at, event_id"
         )
+        query = f"{usage_select}{where} ORDER BY occurred_at, event_id"
 
         aggregates: "OrderedDict[str, Tuple[int, int, int, int, Decimal]]" = OrderedDict()
         with self._lock:
@@ -650,13 +655,19 @@ class CostManager:
         scopes = [GLOBAL_SCOPE]
         if normalized_project is not None:
             scopes.append(normalized_project)
-        placeholders = ",".join("?" for _ in scopes)
         with self._lock:
-            budget_rows = self.connection.execute(
-                f"SELECT scope, period, limit_usd FROM budgets "
-                f"WHERE scope IN ({placeholders}) ORDER BY scope, period",
-                scopes,
-            ).fetchall()
+            if normalized_project is None:
+                budget_rows = self.connection.execute(
+                    "SELECT scope, period, limit_usd FROM budgets "
+                    "WHERE scope = ? ORDER BY scope, period",
+                    scopes,
+                ).fetchall()
+            else:
+                budget_rows = self.connection.execute(
+                    "SELECT scope, period, limit_usd FROM budgets "
+                    "WHERE scope IN (?, ?) ORDER BY scope, period",
+                    scopes,
+                ).fetchall()
 
         statuses: List[BudgetStatus] = []
         for row in budget_rows:

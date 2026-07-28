@@ -1,14 +1,14 @@
 # Contributing
 
-Thank you for improving Helix Token Cost Manager. The project is a deliberately small, local-first Python library and CLI; contributions should preserve that focused product shape unless a broader change has clear user evidence.
+Thank you for improving Samsarix Token Cost Manager. The project is a deliberately small, local-first Python library and CLI maintained by Samsarix LLC; contributions should preserve that focused product shape unless a broader change has clear user evidence.
 
 ## Setup
 
 Prerequisites: Python 3.10 or newer and Git.
 
 ```bash
-git clone https://github.com/Deathcharge/helix-token-cost-manager.git
-cd helix-token-cost-manager
+git clone https://github.com/Deathcharge/samsarix-token-cost-manager.git
+cd samsarix-token-cost-manager
 python -m venv .venv
 python -m pip install --requirement requirements-dev.txt
 ```
@@ -22,13 +22,13 @@ Run the same meaningful checks as CI:
 ```bash
 python -m ruff check .
 python -m ruff format --check .
-python -m mypy helix_token_cost_manager
+python -m mypy samsarix_token_cost_manager
 python -m pytest
 python -m build
 python -m twine check dist/*
 ```
 
-Add focused tests for changed behavior, update the README for user-visible changes, and update `CHANGELOG.md` under “Unreleased.” Tests should use temporary SQLite databases and must not require provider credentials, network access, or private Helix code.
+Add focused tests for changed behavior, update the README for user-visible changes, and update `CHANGELOG.md` under “Unreleased.” Tests should use temporary SQLite databases and must not require provider credentials, network access, or private application code.
 
 ## Design constraints
 
@@ -48,4 +48,6 @@ For suspected vulnerabilities, do not open a public issue; follow [SECURITY.md](
 
 ## License
 
-By contributing, you agree that your contribution is distributed under the repository's existing `LICENSE`. That file contains customized Business Source License terms. License changes and interpretation are owner/legal decisions, not ordinary code contributions.
+Unless you explicitly state otherwise, contributions intentionally submitted for inclusion are provided under the repository's Apache License 2.0, consistent with section 5 of that license. Copyright in individual contributions remains with its owner; the collective project carries Samsarix LLC's attribution in `NOTICE`.
+
+The license does not grant rights to Samsarix names or marks. See `TRADEMARKS.md`. Licensing questions can be sent to `contact@samsarix.com`.

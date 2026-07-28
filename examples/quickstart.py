@@ -1,9 +1,12 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """Complete local example using illustrative, non-provider pricing."""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from helix_token_cost_manager import CostManager
+from samsarix_token_cost_manager import CostManager
 
 
 def main() -> None:

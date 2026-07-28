@@ -6,7 +6,7 @@ Until the first published release, the current `main` branch and the `0.1.x` lin
 
 ## Report a vulnerability
 
-Use GitHub's private **Report a vulnerability** / Security Advisory flow for this repository. If that flow is unavailable, contact the repository owner through a private channel shown on their GitHub profile. Do not include secrets, credentials, private prompts, or personal data in a public issue.
+Use GitHub's private **Report a vulnerability** / Security Advisory flow for this repository. If that flow is unavailable, email `support@samsarix.com` with `[SECURITY]` in the subject. Do not include secrets, credentials, private prompts, or personal data in a public issue.
 
 Include the affected version/commit, operating system and Python version, the exact trust boundary, a minimal sanitized reproduction, impact, and any suggested fix. Maintainers should acknowledge, validate, remediate, and coordinate disclosure before publishing details.
 

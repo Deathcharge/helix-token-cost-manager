@@ -1,3 +1,6 @@
+# Copyright 2026 Samsarix LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """Validated public value objects used by the cost manager."""
 
 from __future__ import annotations
