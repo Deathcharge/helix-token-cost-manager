@@ -4,7 +4,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## Unreleased
 
-- Owner gates: obtain green hosted CI, choose the initial release tag, and approve package publication.
+- Owner gates: choose the initial release tag and approve package publication.
 
 ### Added
 

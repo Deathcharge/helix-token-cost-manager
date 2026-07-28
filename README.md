@@ -4,7 +4,7 @@ Samsarix Token Cost Manager is a local-first Python library and CLI from Samsari
 
 It is for developers and small teams that need cost accounting without adopting an LLM gateway, hosted observability service, or private infrastructure. It never calls an LLM and has no runtime dependencies.
 
-> **Maturity:** `0.1.0` release candidate. The core local workflow is implemented and tested; hosted CI, the initial release tag, and package publication remain owner-controlled release gates.
+> **Maturity:** `0.1.0` release candidate. The core workflow and hosted CI matrix pass; the initial release tag and package publication remain owner-controlled release gates.
 
 ## What it solves
 

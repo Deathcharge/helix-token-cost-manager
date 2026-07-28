@@ -109,7 +109,7 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 - [x] Pin third-party CI actions to reviewed release commit hashes.
 - [x] Reject terminal control/formatting characters and harden large Decimal aggregates and final-calendar-period bounds.
 - [x] Record Samsarix LLC ownership/contact metadata and include `LICENSE`, `NOTICE`, `CITATION.cff`, and trademark guidance in the source distribution.
-- [ ] Run the committed CI workflow on GitHub-hosted Linux, Windows, and macOS runners.
+- [x] Run the committed CI workflow on GitHub-hosted Linux, Windows, and macOS runners.
 
 ### P2 — valuable post-`0.1` work
 
@@ -158,15 +158,14 @@ The repository now implements the chosen vertical slice end to end: local setup,
 
 ### Owner-, credential-, or production-blocked
 
-- **Release identity:** owner chooses whether `0.1.0` is the initial public tag and whether the package name/branding are final.
+- **Release identity:** owner chooses whether `0.1.0` is the initial public tag.
 - **PyPI publication:** owner must control the PyPI organization/account, trusted publisher, and release approval. No credentials or external account were created.
-- **Hosted CI evidence:** the committed workflow requires a push/PR on GitHub; local work cannot claim those runner results.
 
 There are no required provider credentials, production endpoints, databases, domains, or Samsarix services.
 
-## Final local verification evidence
+## Final verification evidence
 
-Verification was run on Windows from the final candidate worktree. Generated environments and artifacts were excluded from source control and removed after inspection.
+Local verification was run on Windows from the final candidate worktree. Generated environments and artifacts were excluded from source control and removed after inspection. The pushed branch and draft pull request also ran the committed hosted matrix.
 
 | Gate | Result |
 |---|---|
@@ -178,7 +177,7 @@ Verification was run on Windows from the final candidate worktree. Generated env
 | Metadata and content | `twine check` passed both artifacts. The wheel contained all six renamed modules, the Samsarix console entry point, Apache license and notice, and metadata; it declared Python `>=3.10` and no runtime dependencies. The sdist also contained the citation, trademark, security, productization, example, and test files. |
 | Installed journey | A fresh virtual environment installed the wheel with `--no-deps`; `pip check`, both CLI entry points, package metadata/import, price setup, a `$7.525` usage record/report, budget denial exit `3`, and `examples/quickstart.py` all passed from outside the source directory. |
 | Security hygiene | Bandit, credential-pattern, and local-link checks passed. `pip-audit 2.10.0` found no known advisories in the exact direct development pins; pytest and setuptools advisories discovered during review were remediated. The transitive contributor graph was not independently audited to completion or hash-locked, so no stronger claim is made. |
-| Hosted matrix | Not run locally. The workflow covers Python 3.10, 3.11, and 3.14 on Linux plus Python 3.11 on Windows and macOS; owner push/PR evidence remains required. |
+| Hosted matrix | [GitHub Actions run 30392946064](https://github.com/Deathcharge/samsarix-token-cost-manager/actions/runs/30392946064) passed Python 3.10, 3.11, and 3.14 on Linux; Python 3.11 on Windows and macOS; and installed-package verification. |
 
 ## Known risks
 
@@ -203,4 +202,4 @@ The smallest distribution is a pure-Python wheel and source distribution on PyPI
 
 ## Release disposition
 
-**Local engineering acceptance passed; public release awaits operational gates.** The complete primary journey, tests, security hardening, artifact build/install, and local start paths passed. The license/ownership blocker is resolved through Samsarix LLC metadata and Apache-2.0. Publication still requires green hosted CI, version/tag approval, and authorized PyPI publication.
+**Engineering acceptance passed; public release awaits owner-controlled publication gates.** The complete primary journey, tests, security hardening, artifact build/install, local start paths, and hosted CI matrix passed. The license/ownership blocker is resolved through Samsarix LLC metadata and Apache-2.0. Publication still requires version/tag approval and authorized PyPI publication.
