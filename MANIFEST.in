@@ -1,0 +1,12 @@
+include CHANGELOG.md
+include CITATION.cff
+include CONTRIBUTING.md
+include NOTICE
+include SECURITY.md
+include TRADEMARKS.md
+include requirements-dev.txt
+recursive-include docs *.md
+recursive-include examples *.py
+recursive-include tests *.py
+global-exclude __pycache__
+global-exclude *.py[cod]

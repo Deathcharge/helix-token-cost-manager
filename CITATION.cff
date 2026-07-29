@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Samsarix Token Cost Manager"
+type: software
+version: 0.1.0
+date-released: 2026-07-28
+authors:
+  - name: "Samsarix LLC"
+contact:
+  - name: "Samsarix LLC"
+    email: "contact@samsarix.com"
+repository-code: "https://github.com/Deathcharge/samsarix-token-cost-manager"
+url: "https://www.samsarix.com"
+license: Apache-2.0

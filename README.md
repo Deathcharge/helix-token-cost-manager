@@ -1,93 +1,220 @@
-# helix-token-cost-manager
+# Samsarix Token Cost Manager
 
-Token cost tracking and optimization
+Samsarix Token Cost Manager is a local-first Python library and CLI from Samsarix LLC for turning provider-reported LLM token usage into auditable USD cost records. It stores explicit, time-versioned prices and immutable usage events in SQLite, produces exact spend summaries, and checks daily or monthly budgets before a model call.
 
-## 🎯 Overview
+It is for developers and small teams that need cost accounting without adopting an LLM gateway, hosted observability service, or private infrastructure. It never calls an LLM and has no runtime dependencies.
 
-This repository is part of the [Helix Collective](https://github.com/Deathcharge/helix-platform), a comprehensive ecosystem for building intelligent, multi-agent systems with consciousness frameworks and advanced LLM integration.
+> **Maturity:** `0.1.0` release candidate. The core workflow and hosted CI matrix pass; the initial release tag and package publication remain owner-controlled release gates.
 
-## 🚀 Quick Start
+## What it solves
 
-### Installation
+- Records the token counts returned by any provider or gateway.
+- Applies the exact provider/model price that was effective when usage occurred.
+- Snapshots rates and calculated cost so historical records do not change later.
+- Prevents duplicate accounting when a stable request ID is retried.
+- Groups spend by provider, model, project, day, or month.
+- Checks global and per-project daily/monthly limits with automation-friendly exit codes.
+- Keeps prompts, responses, credentials, and usage data on the local machine.
 
-\`\`\`bash
-git clone https://github.com/Deathcharge/helix-token-cost-manager.git
-cd helix-token-cost-manager
-pip install -r requirements.txt
-\`\`\`
+## Quick start
 
-### Basic Usage
+Prerequisites: Python 3.10 or newer and Git.
 
-See the [examples/](examples/) directory for working examples and integration patterns.
+```bash
+git clone https://github.com/Deathcharge/samsarix-token-cost-manager.git
+cd samsarix-token-cost-manager
+python -m venv .venv
+python -m pip install .
+```
 
-## 📚 Documentation
+Activate the environment first if your shell does not expose its installed scripts. You can also replace `samsarix-cost` below with `python -m samsarix_token_cost_manager`.
 
-- **[Architecture](docs/ARCHITECTURE.md)** - System design and components
-- **[API Reference](docs/API.md)** - Complete API documentation
-- **[Integration Guide](docs/INTEGRATION.md)** - How to integrate with other Helix repos
-- **[Deployment](docs/DEPLOYMENT.md)** - Production deployment guide
-- **[Contributing](CONTRIBUTING.md)** - How to contribute
+1. Add explicit pricing. These are illustrative rates for a fictional model, not a statement of any provider's current price:
 
-## 🔗 Related Repositories
+   ```bash
+   samsarix-cost --db costs.sqlite3 price set \
+     --provider example \
+     --model model-v1 \
+     --input 2.50 \
+     --output 10.00 \
+     --cached-input 0.25 \
+     --effective-from 2026-01-01
+   ```
 
-- **[helix-platform](https://github.com/Deathcharge/helix-platform)** - Central hub and integration guide
-- **[helix-unified](https://github.com/Deathcharge/helix-unified)** - Main unified codebase
-- **[helix-core](https://github.com/Deathcharge/helix-core)** - Core utilities and LLM integration
+2. Record provider-reported usage:
 
-See [HELIX_REPOSITORY_INDEX.md](https://github.com/Deathcharge/helix-platform/blob/main/HELIX_REPOSITORY_INDEX.md) for the complete ecosystem map.
+   ```bash
+   samsarix-cost --db costs.sqlite3 record \
+     --provider example \
+     --model model-v1 \
+     --input-tokens 1000000 \
+     --output-tokens 500000 \
+     --cached-input-tokens 100000 \
+     --project demo \
+     --request-id req-001
+   ```
 
-## 🧪 Testing
+   Expected result:
 
-Run tests with pytest:
+   ```text
+   Recorded evt_<generated-id>: $7.525
+   ```
 
-\`\`\`bash
-pytest tests/ -v --cov=src
-\`\`\`
+3. Review spend:
 
-## 🔄 CI/CD
+   ```bash
+   samsarix-cost --db costs.sqlite3 report --group-by model
+   ```
 
-This repository uses GitHub Actions for:
-- ✅ Automated testing (Python 3.9, 3.10, 3.11)
-- ✅ Code linting (flake8)
-- ✅ Type checking (mypy)
-- ✅ Security scanning (bandit, safety)
-- ✅ Coverage reporting (Codecov)
+   ```text
+   GROUP             REQUESTS  INPUT    OUTPUT  CACHED INPUT  TOTAL USD
+   ----------------  --------  -------  ------  ------------  ---------
+   example/model-v1  1         1000000  500000  100000        $7.525
+   ```
 
-See [.github/workflows/ci.yml](.github/workflows/ci.yml) for details.
+The database is created automatically. `samsarix-cost init` is available when an explicit initialization step is preferable.
 
-## 📋 Requirements
+## Check a budget before a call
 
-- Python 3.9+
-- Dependencies listed in requirements.txt
-- Development dependencies in requirements-dev.txt
+```bash
+samsarix-cost --db costs.sqlite3 budget set \
+  --amount 25 \
+  --period monthly \
+  --project demo
 
-## 🤝 Contributing
+samsarix-cost --db costs.sqlite3 budget check \
+  --provider example \
+  --model model-v1 \
+  --input-tokens 2000 \
+  --output-tokens 500 \
+  --project demo
+```
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Development setup
-- Code style guide
-- Testing requirements
-- Pull request process
+`budget check` evaluates both global and matching project budgets. It exits `0` when allowed, `3` when projected spend exceeds a limit, and `2` for invalid input or another expected product error. Recording already-incurred usage never drops the record; it prints a warning if the stored event leaves a budget exceeded.
 
-## 📄 License
+For scripts, put `--json` before the command:
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+```bash
+samsarix-cost --db costs.sqlite3 --json report --month 2026-07 --group-by project
+```
 
-## 🆘 Support
+## Python API
 
-- **Issues**: Report bugs or request features via [GitHub Issues](https://github.com/Deathcharge/helix-token-cost-manager/issues)
-- **Discussions**: Ask questions in [GitHub Discussions](https://github.com/Deathcharge/helix-token-cost-manager/discussions)
-- **Documentation**: See the [docs/](docs/) directory
-- **Ecosystem**: Visit [helix-platform](https://github.com/Deathcharge/helix-platform)
+```python
+from samsarix_token_cost_manager import CostManager
 
-## 🎓 Learn More
+with CostManager("costs.sqlite3") as costs:
+    costs.set_price(
+        provider="example",
+        model="model-v1",
+        input_usd_per_million="2.50",
+        output_usd_per_million="10.00",
+        cached_input_usd_per_million="0.25",
+        effective_from="2026-01-01",
+    )
+    result = costs.record(
+        provider="example",
+        model="model-v1",
+        input_tokens=1_000,
+        output_tokens=250,
+        request_id="req-001",
+        project="demo",
+    )
+    print(result.event.cost.total_usd)
+```
 
-- [Helix Collective Repository Index](https://github.com/Deathcharge/helix-platform/blob/main/HELIX_REPOSITORY_INDEX.md)
-- [Architecture Guide](https://github.com/Deathcharge/helix-platform/blob/main/docs/ARCHITECTURE.md)
-- [Integration Examples](https://github.com/Deathcharge/helix-platform/tree/main/examples)
+The deliberate public API is exported from `samsarix_token_cost_manager`: `CostManager`, its value objects, and expected exception types. Provider SDKs are intentionally not dependencies; pass their returned usage counts into `record`.
 
----
+## Pricing and usage contract
 
-**Status**: ✅ Production Ready  
-**Last Updated**: June 19, 2026  
-**Maintainer**: Helix Collective Contributors
+- Rates are USD per one million units and are stored as decimal strings.
+- `input_tokens`, `cached_input_tokens`, and `output_tokens` are mutually exclusive buckets. Do not include cached input again in `input_tokens`.
+- Provider-reported usage is preferred. This package does not guess tokens from prompts or responses.
+- Price matching is exact on `provider` and `model`; it does not use fuzzy aliases that could silently apply the wrong rate.
+- `effective_from` and all budget periods use UTC. A date means midnight UTC.
+- Historical events contain the selected rate version and calculated cost. Updating a price affects later records only.
+- Cost is quantized to one trillionth of a USD using `Decimal`, avoiding binary floating-point drift.
+
+## Configuration and persistence
+
+`--db PATH` chooses the SQLite database. Without it, `SAMSARIX_COST_DB` is used. Otherwise the default is:
+
+- Windows: `%LOCALAPPDATA%\samsarix-token-cost-manager\costs.sqlite3`
+- macOS/Linux: `$XDG_DATA_HOME/samsarix-token-cost-manager/costs.sqlite3`, or `~/.local/share/...`
+
+SQLite WAL mode and a five-second busy timeout support concurrent local processes. One `CostManager` instance also serializes access between threads. For a filesystem backup, close every connection before copying the database and its sidecar files. For an online backup, use SQLite's backup API (available as `sqlite3.Connection.backup()` in Python) or `VACUUM INTO`; do not sequentially copy live database and WAL files.
+
+The package stores provider/model names, token counts, timestamps, optional request IDs, optional project labels, rates, and costs. It does not store prompts, responses, API keys, user content, or network endpoints.
+
+## Command reference
+
+```text
+samsarix-cost init
+samsarix-cost price set|list
+samsarix-cost estimate
+samsarix-cost record
+samsarix-cost report
+samsarix-cost budget set|check
+```
+
+Run `samsarix-cost --help` or any subcommand with `--help` for complete arguments. Human-readable output goes to stdout, expected error messages go to stderr, and `--json` provides stable machine-readable output.
+
+## Development and verification
+
+The runtime package has no third-party dependencies. Contributor tools are pinned:
+
+```bash
+python -m venv .venv
+python -m pip install --requirement requirements-dev.txt
+python -m ruff check .
+python -m ruff format --check .
+python -m mypy samsarix_token_cost_manager
+python -m pytest
+python -m build
+python -m twine check dist/*
+```
+
+CI runs linting, formatting, type checks, and tests on Python 3.10, 3.11, and 3.14 on Linux plus Python 3.11 on Windows and macOS. A separate job builds, inspects, installs, and smoke-tests the wheel.
+
+## Architecture
+
+- `models.py`: bounded input validation and immutable decimal value objects.
+- `manager.py`: schema initialization, pricing, immutable records, exact streaming summaries, and budget evaluation.
+- `cli.py`: standard-library CLI with stable JSON and exit-code contracts.
+- SQLite schema version `1`: explicit price history, usage events, and budget constraints.
+
+There is no server, frontend, provider client, telemetry, authentication layer, or cloud component. The local operator and filesystem boundary are the security model.
+
+## Security, privacy, and reliability
+
+- No network calls, credentials, prompt logging, telemetry, or secret configuration.
+- SQL values are parameterized; report grouping is a fixed allowlist.
+- Text, token counts, rates, and timestamps are bounded and validated.
+- Unknown models fail closed instead of producing a zero or guessed cost.
+- Request IDs provide idempotent record retries and reject conflicting reuse.
+- Database schema versions newer than the installed package fail closed.
+- Budget checks are advisory enforcement points; callers must run them before spending.
+
+See [SECURITY.md](SECURITY.md) for the threat boundary and disclosure process.
+
+## Limitations
+
+- Pricing must be maintained by the operator; no bundled catalog can silently become stale.
+- Only USD and token-based input/output/cached-input rates are supported in schema version `1`.
+- There is no tokenizer, automatic provider response adapter, tiered/context-length pricing, import/export command, dashboard, or distributed aggregation.
+- SQLite is intended for local/single-host use, not a shared network filesystem.
+- Budget checks cannot stop calls made through unrelated code; integrate the exit code or Python result into the caller.
+
+These are deliberate release boundaries. Planned work is prioritized in [docs/PRODUCTIZATION.md](docs/PRODUCTIZATION.md).
+
+## Distribution and project status
+
+The simplest release path is a source distribution and pure-Python wheel published to PyPI after owner approval. The name `samsarix-token-cost-manager` returned no PyPI project on July 28, 2026, but availability is not reserved until publication. No package has been published by this work.
+
+Contributions are welcome through GitHub issues and pull requests; see [CONTRIBUTING.md](CONTRIBUTING.md). The productization decisions and exact baseline are recorded in [docs/PRODUCTIZATION.md](docs/PRODUCTIZATION.md).
+
+## License, attribution, and support
+
+Copyright 2026 Samsarix LLC. The software and documentation are licensed under the [Apache License 2.0](LICENSE), with attribution recorded in [NOTICE](NOTICE). Apache-2.0 permits commercial use and modification subject to its terms, preserves applicable notices, and includes an express patent grant. It does not license Samsarix names or marks; see [TRADEMARKS.md](TRADEMARKS.md).
+
+For general inquiries, email `contact@samsarix.com`. For product support, email `support@samsarix.com`. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).

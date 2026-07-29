@@ -1,32 +1,80 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "helix-token-cost-manager"
-version = "0.1.0"
-description = "Token tracking and cost calculation for LLM usage"
+name = "samsarix-token-cost-manager"
+dynamic = ["version"]
+description = "Local-first, provider-neutral LLM token usage and cost accounting"
 readme = "README.md"
-requires-python = ">=3.9"
-license = {text = "MIT"}
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
-    {name = "Helix Collective", email = "collective@helix.ai"}
+    {name = "Samsarix LLC", email = "contact@samsarix.com"},
 ]
+maintainers = [
+    {name = "Samsarix LLC", email = "support@samsarix.com"},
+]
+keywords = ["llm", "tokens", "cost", "budget", "sqlite"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-    "helix-hub-shared>=0.1.0",
-    "pydantic>=2.0",
-]
+dependencies = []
+
+[project.scripts]
+samsarix-cost = "samsarix_token_cost_manager.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Deathcharge/helix-token-cost-manager"
-Repository = "https://github.com/Deathcharge/helix-token-cost-manager.git"
-Issues = "https://github.com/Deathcharge/helix-token-cost-manager/issues"
+Homepage = "https://www.samsarix.com"
+Repository = "https://github.com/Deathcharge/samsarix-token-cost-manager.git"
+Issues = "https://github.com/Deathcharge/samsarix-token-cost-manager/issues"
+
+[tool.setuptools.packages.find]
+include = ["samsarix_token_cost_manager*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "samsarix_token_cost_manager.__version__"}
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov=samsarix_token_cost_manager",
+    "--cov-branch",
+    "--cov-report=term-missing",
+    "--cov-fail-under=90",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["samsarix_token_cost_manager"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
