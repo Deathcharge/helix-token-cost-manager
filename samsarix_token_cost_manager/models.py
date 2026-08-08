@@ -6,16 +6,18 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from .exceptions import ValidationError
 
 DecimalInput = Union[Decimal, int, str, float]
 
 MAX_TEXT_LENGTH = 200
+MAX_DIMENSIONS = 32
 MAX_TOKENS = 1_000_000_000_000
 MAX_RATE_USD_PER_MILLION = Decimal("1000000")
 USD_QUANTUM = Decimal("0.000000000001")
@@ -62,7 +64,7 @@ def format_timestamp(value: datetime) -> str:
 
 
 def validated_text(
-    value: str,
+    value: object,
     *,
     field: str,
     required: bool = True,
@@ -86,7 +88,7 @@ def validated_text(
     return normalized
 
 
-def validated_tokens(value: int, *, field: str) -> int:
+def validated_tokens(value: object, *, field: str) -> int:
     """Validate a non-negative, bounded token count."""
 
     if isinstance(value, bool) or not isinstance(value, int):
@@ -96,6 +98,27 @@ def validated_tokens(value: int, *, field: str) -> int:
     if value > MAX_TOKENS:
         raise ValidationError(f"{field} must not exceed {MAX_TOKENS}")
     return value
+
+
+def validated_dimensions(
+    value: Optional[Mapping[str, str]],
+) -> Tuple[Tuple[str, str], ...]:
+    """Validate bounded allocation metadata and return a stable immutable form."""
+
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise ValidationError("dimensions must be a string-to-string mapping")
+    if len(value) > MAX_DIMENSIONS:
+        raise ValidationError(f"dimensions must contain at most {MAX_DIMENSIONS} entries")
+    normalized: Dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = validated_text(raw_key, field="dimension key")
+        dimension_value = validated_text(raw_value, field=f"dimension {key!r}")
+        if key in normalized:
+            raise ValidationError(f"dimension key {key!r} is duplicated after normalization")
+        normalized[key] = dimension_value
+    return tuple(sorted(normalized.items()))
 
 
 def validated_decimal(
@@ -147,6 +170,7 @@ class ModelPrice:
     input_usd_per_million: Decimal
     output_usd_per_million: Decimal
     cached_input_usd_per_million: Decimal
+    cache_write_input_usd_per_million: Decimal
     effective_from: datetime
 
     def to_dict(self) -> Dict[str, Any]:
@@ -158,6 +182,9 @@ class ModelPrice:
             "input_usd_per_million": decimal_text(self.input_usd_per_million),
             "output_usd_per_million": decimal_text(self.output_usd_per_million),
             "cached_input_usd_per_million": decimal_text(self.cached_input_usd_per_million),
+            "cache_write_input_usd_per_million": decimal_text(
+                self.cache_write_input_usd_per_million
+            ),
             "effective_from": format_timestamp(self.effective_from),
         }
 
@@ -169,6 +196,7 @@ class CostBreakdown:
     input_usd: Decimal
     output_usd: Decimal
     cached_input_usd: Decimal
+    cache_write_input_usd: Decimal
     total_usd: Decimal
     price: ModelPrice
 
@@ -179,6 +207,7 @@ class CostBreakdown:
             "input_usd": decimal_text(self.input_usd),
             "output_usd": decimal_text(self.output_usd),
             "cached_input_usd": decimal_text(self.cached_input_usd),
+            "cache_write_input_usd": decimal_text(self.cache_write_input_usd),
             "total_usd": decimal_text(self.total_usd),
             "price": self.price.to_dict(),
         }
@@ -198,6 +227,8 @@ class UsageEvent:
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int
+    cache_write_input_tokens: int
+    dimensions: Tuple[Tuple[str, str], ...]
     cost: CostBreakdown
 
     def to_dict(self) -> Dict[str, Any]:
@@ -214,6 +245,8 @@ class UsageEvent:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cached_input_tokens": self.cached_input_tokens,
+            "cache_write_input_tokens": self.cache_write_input_tokens,
+            "dimensions": dict(self.dimensions),
             "cost": self.cost.to_dict(),
         }
 
@@ -240,6 +273,7 @@ class SummaryRow:
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int
+    cache_write_input_tokens: int
     total_usd: Decimal
 
     def to_dict(self) -> Dict[str, Any]:

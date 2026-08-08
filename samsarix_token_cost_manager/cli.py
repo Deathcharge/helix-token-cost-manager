@@ -9,16 +9,19 @@ import argparse
 import json
 import sqlite3
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from . import __version__
+from .adapters import from_anthropic_response, from_openai_response, from_otel_attributes
 from .exceptions import CostManagerError, ValidationError
-from .manager import VALID_GROUPS, VALID_PERIODS, CostManager, default_database_path
+from .manager import SCHEMA_VERSION, VALID_GROUPS, VALID_PERIODS, CostManager, default_database_path
 from .models import (
     BudgetStatus,
+    RecordResult,
     SummaryRow,
     decimal_text,
     validated_decimal,
@@ -26,6 +29,7 @@ from .models import (
 
 EXIT_ERROR = 2
 EXIT_BUDGET_EXCEEDED = 3
+MAX_INGEST_BYTES = 10 * 1024 * 1024
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -65,6 +69,11 @@ def _parser() -> argparse.ArgumentParser:
         help="USD per one million non-cached input tokens",
     )
     price_set.add_argument(
+        "--cache-write-input",
+        dest="cache_write_input_rate",
+        help="USD per one million cache-creation tokens (defaults to --input)",
+    )
+    price_set.add_argument(
         "--output",
         required=True,
         dest="output_rate",
@@ -87,16 +96,31 @@ def _parser() -> argparse.ArgumentParser:
     record = subparsers.add_parser("record", help="record one costed usage event")
     _add_usage_arguments(record, include_identity=True)
 
+    ingest = subparsers.add_parser(
+        "ingest", help="record usage from an OpenAI, Anthropic, or OpenTelemetry JSON payload"
+    )
+    ingest.add_argument("--format", choices=("openai", "anthropic", "otel"), required=True)
+    ingest.add_argument("--file", required=True, help="JSON file path, or - for standard input")
+    ingest.add_argument("--project", help="optional cost allocation project")
+    ingest.add_argument("--dimension", action="append", default=[], metavar="KEY=VALUE")
+    ingest.add_argument("--occurred-at", help="ISO-8601 timestamp (defaults to now)")
+
     report = subparsers.add_parser("report", help="summarize recorded usage and cost")
     report.add_argument("--since", help="inclusive ISO-8601 date/timestamp")
     report.add_argument("--until", help="exclusive ISO-8601 date/timestamp")
     report.add_argument("--month", help="UTC month in YYYY-MM form")
     report.add_argument("--project", help="limit the report to one project")
     report.add_argument(
+        "--dimension",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="require an exact allocation dimension; repeat for AND matching",
+    )
+    report.add_argument(
         "--group-by",
-        choices=VALID_GROUPS,
         default="none",
-        help="aggregation dimension (default: none)",
+        help=(f"aggregation dimension ({', '.join(VALID_GROUPS)} or dimension:KEY; default: none)"),
     )
 
     budget = subparsers.add_parser("budget", help="configure and check spend budgets")
@@ -115,6 +139,7 @@ def _parser() -> argparse.ArgumentParser:
     budget_check.add_argument("--input-tokens", type=int, default=0)
     budget_check.add_argument("--output-tokens", type=int, default=0)
     budget_check.add_argument("--cached-input-tokens", type=int, default=0)
+    budget_check.add_argument("--cache-write-input-tokens", type=int, default=0)
     budget_check.add_argument("--project", help="apply project and global budgets")
     budget_check.add_argument("--at", help="ISO-8601 timestamp (defaults to now)")
     return parser
@@ -126,12 +151,14 @@ def _add_usage_arguments(parser: argparse.ArgumentParser, *, include_identity: b
     parser.add_argument("--input-tokens", type=int, default=0)
     parser.add_argument("--output-tokens", type=int, default=0)
     parser.add_argument("--cached-input-tokens", type=int, default=0)
+    parser.add_argument("--cache-write-input-tokens", type=int, default=0)
     if include_identity:
         parser.add_argument(
             "--request-id",
             help="idempotency key; retries with the same usage return the original event",
         )
         parser.add_argument("--project", help="optional non-sensitive cost allocation label")
+        parser.add_argument("--dimension", action="append", default=[], metavar="KEY=VALUE")
         parser.add_argument("--occurred-at", help="ISO-8601 timestamp (defaults to now)")
     else:
         parser.add_argument("--at", help="price lookup timestamp (defaults to now)")
@@ -152,6 +179,41 @@ def _month_bounds(month: str) -> Tuple[str, Optional[str]]:
     return start.isoformat(), end.isoformat()
 
 
+def _parse_dimensions(values: Sequence[str]) -> Dict[str, str]:
+    dimensions: Dict[str, str] = {}
+    for item in values:
+        key, separator, value = item.partition("=")
+        if not separator or not key.strip() or not value.strip():
+            raise ValidationError("dimension must use non-empty KEY=VALUE syntax")
+        normalized_key = key.strip()
+        if normalized_key in dimensions:
+            raise ValidationError(f"dimension {normalized_key!r} was provided more than once")
+        dimensions[normalized_key] = value.strip()
+    return dimensions
+
+
+def _load_json_payload(path: str) -> Mapping[str, object]:
+    try:
+        if path == "-":
+            content = sys.stdin.read(MAX_INGEST_BYTES + 1)
+        else:
+            payload_path = Path(path)
+            if payload_path.stat().st_size > MAX_INGEST_BYTES:
+                raise ValidationError(f"ingest payload must not exceed {MAX_INGEST_BYTES} bytes")
+            content = payload_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValidationError(f"could not read ingest payload: {exc}") from exc
+    if len(content.encode("utf-8")) > MAX_INGEST_BYTES:
+        raise ValidationError(f"ingest payload must not exceed {MAX_INGEST_BYTES} bytes")
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValidationError("ingest payload must be a UTF-8 JSON object") from exc
+    if not isinstance(payload, dict):
+        raise ValidationError("ingest payload must be a JSON object")
+    return payload
+
+
 def _emit_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False))
 
@@ -164,7 +226,15 @@ def _render_prices(prices: Sequence[Any]) -> None:
     if not prices:
         print("No model prices configured. Add one with `samsarix-cost price set`.")
         return
-    headers = ("PROVIDER", "MODEL", "INPUT/1M", "OUTPUT/1M", "CACHED/1M", "EFFECTIVE")
+    headers = (
+        "PROVIDER",
+        "MODEL",
+        "INPUT/1M",
+        "OUTPUT/1M",
+        "CACHE READ/1M",
+        "CACHE WRITE/1M",
+        "EFFECTIVE",
+    )
     rows = [
         (
             price.provider,
@@ -172,6 +242,7 @@ def _render_prices(prices: Sequence[Any]) -> None:
             _format_usd(price.input_usd_per_million),
             _format_usd(price.output_usd_per_million),
             _format_usd(price.cached_input_usd_per_million),
+            _format_usd(price.cache_write_input_usd_per_million),
             price.to_dict()["effective_from"],
         )
         for price in prices
@@ -190,12 +261,21 @@ def _render_report(rows: Sequence[SummaryRow]) -> None:
             str(row.input_tokens),
             str(row.output_tokens),
             str(row.cached_input_tokens),
+            str(row.cache_write_input_tokens),
             _format_usd(row.total_usd),
         )
         for row in rows
     ]
     _table(
-        ("GROUP", "REQUESTS", "INPUT", "OUTPUT", "CACHED INPUT", "TOTAL USD"),
+        (
+            "GROUP",
+            "REQUESTS",
+            "INPUT",
+            "OUTPUT",
+            "CACHE READ",
+            "CACHE WRITE",
+            "TOTAL USD",
+        ),
         table_rows,
     )
 
@@ -230,18 +310,51 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
         print(pattern.format(*row))
 
 
+def _render_record_result(
+    manager: CostManager,
+    record_result: RecordResult,
+    *,
+    emit_json: bool,
+    source_format: Optional[str] = None,
+) -> None:
+    statuses = manager.check_budgets(
+        estimated_usd=Decimal("0"),
+        project=record_result.event.project,
+        at=record_result.event.occurred_at,
+    )
+    payload = record_result.to_dict()
+    if source_format is not None:
+        payload["source_format"] = source_format
+    payload["budget_statuses"] = [status.to_dict() for status in statuses]
+    if emit_json:
+        _emit_json(payload)
+        return
+    verb = "Recorded" if record_result.created else "Already recorded"
+    origin = f" from {source_format}" if source_format is not None else ""
+    print(
+        f"{verb} {record_result.event.event_id}{origin}: "
+        f"{_format_usd(record_result.event.cost.total_usd)}"
+    )
+    if any(not status.allowed for status in statuses):
+        print(
+            "Warning: recorded spend exceeds an applicable budget; "
+            "use `budget check` before future calls.",
+            file=sys.stderr,
+        )
+
+
 def _dispatch(arguments: argparse.Namespace) -> int:
     database = arguments.db or default_database_path()
     with CostManager(database) as manager:
         if arguments.command == "init":
             payload = {
                 "database": str(manager.database.resolve()),
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
             }
             if arguments.json:
                 _emit_json(payload)
             else:
-                print(f"Initialized {payload['database']} (schema 1).")
+                print(f"Initialized {payload['database']} (schema {SCHEMA_VERSION}).")
             return 0
 
         if arguments.command == "price" and arguments.price_command == "set":
@@ -251,6 +364,7 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 input_usd_per_million=arguments.input_rate,
                 output_usd_per_million=arguments.output_rate,
                 cached_input_usd_per_million=arguments.cached_input_rate,
+                cache_write_input_usd_per_million=arguments.cache_write_input_rate,
                 effective_from=arguments.effective_from,
             )
             if arguments.json:
@@ -277,6 +391,7 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 input_tokens=arguments.input_tokens,
                 output_tokens=arguments.output_tokens,
                 cached_input_tokens=arguments.cached_input_tokens,
+                cache_write_input_tokens=arguments.cache_write_input_tokens,
                 at=arguments.at,
             )
             if arguments.json:
@@ -292,32 +407,35 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 input_tokens=arguments.input_tokens,
                 output_tokens=arguments.output_tokens,
                 cached_input_tokens=arguments.cached_input_tokens,
+                cache_write_input_tokens=arguments.cache_write_input_tokens,
                 request_id=arguments.request_id,
                 project=arguments.project,
+                dimensions=_parse_dimensions(arguments.dimension),
                 occurred_at=arguments.occurred_at,
             )
-            statuses = manager.check_budgets(
-                estimated_usd=Decimal("0"),
-                project=record_result.event.project,
-                at=record_result.event.occurred_at,
+            _render_record_result(manager, record_result, emit_json=arguments.json)
+            return 0
+
+        if arguments.command == "ingest":
+            ingest_payload = _load_json_payload(arguments.file)
+            adapters = {
+                "openai": from_openai_response,
+                "anthropic": from_anthropic_response,
+                "otel": from_otel_attributes,
+            }
+            measurement = adapters[arguments.format](ingest_payload)
+            record_result = manager.record_measurement(
+                measurement,
+                project=arguments.project,
+                dimensions=_parse_dimensions(arguments.dimension),
+                occurred_at=arguments.occurred_at,
             )
-            payload = record_result.to_dict()
-            payload["budget_statuses"] = [status.to_dict() for status in statuses]
-            if arguments.json:
-                _emit_json(payload)
-            else:
-                verb = "Recorded" if record_result.created else "Already recorded"
-                print(
-                    f"{verb} {record_result.event.event_id}: "
-                    f"{_format_usd(record_result.event.cost.total_usd)}"
-                )
-                denied = [status for status in statuses if not status.allowed]
-                if denied:
-                    print(
-                        "Warning: recorded spend exceeds an applicable budget; "
-                        "use `budget check` before future calls.",
-                        file=sys.stderr,
-                    )
+            _render_record_result(
+                manager,
+                record_result,
+                emit_json=arguments.json,
+                source_format=arguments.format,
+            )
             return 0
 
         if arguments.command == "report":
@@ -332,6 +450,7 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 until=until,
                 project=arguments.project,
                 group_by=arguments.group_by,
+                dimensions=_parse_dimensions(arguments.dimension),
             )
             if arguments.json:
                 _emit_json([row.to_dict() for row in rows])
@@ -375,6 +494,7 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                     input_tokens=arguments.input_tokens,
                     output_tokens=arguments.output_tokens,
                     cached_input_tokens=arguments.cached_input_tokens,
+                    cache_write_input_tokens=arguments.cache_write_input_tokens,
                     at=arguments.at,
                 ).total_usd
             statuses = manager.check_budgets(

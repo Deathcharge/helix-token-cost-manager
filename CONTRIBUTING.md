@@ -36,7 +36,9 @@ Add focused tests for changed behavior, update the README for user-visible chang
 - Fail closed when a price is missing or a database schema is newer than supported.
 - Keep all SQL values parameterized and dynamic query dimensions allowlisted.
 - Do not store prompts, responses, API keys, or unbounded metadata.
-- Treat token buckets as mutually exclusive; cached input is not also ordinary input.
+- Treat ordinary input, cache-read input, cache-write input, and output as mutually exclusive buckets.
+- Keep provider/telemetry adapters dependency-free, content-blind, bounded, and covered by realistic compatibility fixtures.
+- Treat allocation dimensions as non-sensitive identifiers; never add prompt, response, credential, or direct personal-data capture.
 - Preserve stable CLI exit codes and `--json` fields within a `0.x` release when practical.
 - Avoid runtime dependencies unless their product value clearly outweighs supply-chain and installation cost.
 

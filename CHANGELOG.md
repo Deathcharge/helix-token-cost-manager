@@ -8,6 +8,11 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Dependency-free adapters for OpenAI Responses/Chat Completions, Anthropic Messages, and OpenTelemetry GenAI usage payloads.
+- Separate cache-creation token pricing and cost snapshots.
+- Bounded allocation dimensions with exact report filters and `dimension:<key>` grouping.
+- `samsarix-cost ingest` for bounded JSON file or standard-input workflows.
+- Transactional SQLite schema `1` to `2` migration and provider-shaped compatibility fixtures.
 - Local SQLite price history, immutable usage records, and exact decimal cost snapshots.
 - Provider/model/project/day/month reporting with stable JSON output.
 - Global and per-project daily/monthly budget checks.

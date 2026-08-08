@@ -3,6 +3,12 @@
 
 """Local-first, provider-neutral token usage and cost accounting."""
 
+from .adapters import (
+    UsageMeasurement,
+    from_anthropic_response,
+    from_openai_response,
+    from_otel_attributes,
+)
 from .exceptions import (
     CostManagerError,
     DuplicateRequestError,
@@ -30,8 +36,12 @@ __all__ = [
     "RecordResult",
     "SummaryRow",
     "UsageEvent",
+    "UsageMeasurement",
     "ValidationError",
     "default_database_path",
+    "from_anthropic_response",
+    "from_openai_response",
+    "from_otel_attributes",
 ]
 
 __version__ = "0.1.0"

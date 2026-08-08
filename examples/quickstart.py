@@ -21,6 +21,7 @@ def main() -> None:
                 input_usd_per_million="2.50",
                 output_usd_per_million="10.00",
                 cached_input_usd_per_million="0.25",
+                cache_write_input_usd_per_million="3.125",
                 effective_from="2026-01-01",
             )
             event = costs.record(
@@ -29,6 +30,7 @@ def main() -> None:
                 input_tokens=1_000_000,
                 output_tokens=500_000,
                 cached_input_tokens=100_000,
+                dimensions={"team": "platform", "feature": "assistant"},
                 project="demo",
                 request_id="example-request-1",
                 occurred_at="2026-07-28T12:00:00Z",
