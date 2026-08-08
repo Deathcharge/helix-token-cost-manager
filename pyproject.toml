@@ -16,7 +16,7 @@ authors = [
 maintainers = [
     {name = "Samsarix LLC", email = "support@samsarix.com"},
 ]
-keywords = ["llm", "tokens", "cost", "budget", "sqlite"]
+keywords = ["llm", "tokens", "cost", "finops", "opentelemetry", "budget", "sqlite"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -37,6 +37,8 @@ samsarix-cost = "samsarix_token_cost_manager.cli:main"
 Homepage = "https://www.samsarix.com"
 Repository = "https://github.com/Deathcharge/samsarix-token-cost-manager.git"
 Issues = "https://github.com/Deathcharge/samsarix-token-cost-manager/issues"
+Documentation = "https://github.com/Deathcharge/samsarix-token-cost-manager/blob/main/docs/INTEGRATIONS.md"
+Changelog = "https://github.com/Deathcharge/samsarix-token-cost-manager/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["samsarix_token_cost_manager*"]

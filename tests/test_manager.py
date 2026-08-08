@@ -18,6 +18,7 @@ from samsarix_token_cost_manager import (
     CostManager,
     DuplicateRequestError,
     PriceNotFoundError,
+    UsageMeasurement,
     ValidationError,
 )
 from samsarix_token_cost_manager.manager import default_database_path
@@ -437,3 +438,141 @@ def test_last_calendar_period_has_an_open_upper_bound(manager: CostManager) -> N
 
     assert len(statuses) == 2
     assert all(status.allowed for status in statuses)
+
+
+def test_cache_write_pricing_and_allocation_dimensions(manager: CostManager) -> None:
+    manager.set_price(
+        provider="anthropic",
+        model="claude-sonnet",
+        input_usd_per_million="3",
+        output_usd_per_million="15",
+        cached_input_usd_per_million="0.30",
+        cache_write_input_usd_per_million="3.75",
+        effective_from="2026-01-01",
+    )
+    measurement = UsageMeasurement(
+        provider="anthropic",
+        model="claude-sonnet",
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+        cached_input_tokens=500_000,
+        cache_write_input_tokens=200_000,
+        request_id="msg-real-1",
+        dimensions=(("environment", "production"), ("feature", "support")),
+    )
+
+    result = manager.record_measurement(
+        measurement,
+        project="customer-platform",
+        dimensions={"team": "ai-platform"},
+        occurred_at="2026-08-01T12:00:00Z",
+    )
+    retry = manager.record_measurement(
+        measurement,
+        project="customer-platform",
+        dimensions={"team": "ai-platform"},
+    )
+
+    assert result.created is True
+    assert retry.created is False
+    assert result.event.cache_write_input_tokens == 200_000
+    assert result.event.cost.cache_write_input_usd == Decimal("0.750000000000")
+    assert result.event.cost.total_usd == Decimal("5.400000000000")
+    assert dict(result.event.dimensions) == {
+        "environment": "production",
+        "feature": "support",
+        "team": "ai-platform",
+    }
+
+    by_team = manager.summarize(group_by="dimension:team")
+    filtered = manager.summarize(dimensions={"environment": "production", "feature": "support"})
+    missing = manager.summarize(dimensions={"environment": "staging"})
+    assert by_team[0].group == "ai-platform"
+    assert by_team[0].cache_write_input_tokens == 200_000
+    assert filtered[0].total_usd == Decimal("5.400000000000")
+    assert missing == []
+
+
+def test_dimension_group_includes_unassigned_and_conflicting_retry_fails(
+    manager: CostManager,
+) -> None:
+    manager.record(
+        provider="example",
+        model="model-v1",
+        input_tokens=1,
+        request_id="dimension-request",
+    )
+    rows = manager.summarize(group_by="dimension:team")
+    assert rows[0].group == "(unassigned)"
+
+    with pytest.raises(DuplicateRequestError, match="different usage data"):
+        manager.record(
+            provider="example",
+            model="model-v1",
+            input_tokens=1,
+            request_id="dimension-request",
+            dimensions={"team": "platform"},
+        )
+
+
+def test_schema_one_database_migrates_to_schema_two(tmp_path: Path) -> None:
+    database = tmp_path / "v1.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE model_prices (
+            provider TEXT NOT NULL, model TEXT NOT NULL, effective_from TEXT NOT NULL,
+            input_rate TEXT NOT NULL, output_rate TEXT NOT NULL,
+            cached_input_rate TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY (provider, model, effective_from)
+        );
+        CREATE TABLE usage_events (
+            event_id TEXT PRIMARY KEY, request_id TEXT UNIQUE, occurred_at TEXT NOT NULL,
+            recorded_at TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+            project TEXT, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+            cached_input_tokens INTEGER NOT NULL, input_rate TEXT NOT NULL,
+            output_rate TEXT NOT NULL, cached_input_rate TEXT NOT NULL,
+            price_effective_from TEXT NOT NULL, input_cost TEXT NOT NULL,
+            output_cost TEXT NOT NULL, cached_input_cost TEXT NOT NULL,
+            total_cost TEXT NOT NULL
+        );
+        CREATE TABLE budgets (
+            scope TEXT NOT NULL, period TEXT NOT NULL, limit_usd TEXT NOT NULL,
+            updated_at TEXT NOT NULL, PRIMARY KEY (scope, period)
+        );
+        INSERT INTO model_prices VALUES (
+            'example', 'model-v1', '2026-01-01T00:00:00.000000Z',
+            '2.5', '10', '0.25', '2026-01-01T00:00:00.000000Z'
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    connection.close()
+
+    with CostManager(database) as migrated:
+        version = migrated.connection.execute("PRAGMA user_version").fetchone()[0]
+        price = migrated.get_price(provider="example", model="model-v1", at="2026-08-01")
+        dimension_table = migrated.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'event_dimensions'"
+        ).fetchone()
+
+    assert version == 2
+    assert price.cache_write_input_usd_per_million == Decimal("2.5")
+    assert dimension_table is not None
+
+
+def test_dimension_validation_is_bounded_and_normalized(manager: CostManager) -> None:
+    with pytest.raises(ValidationError, match="at most 32"):
+        manager.record(
+            provider="example",
+            model="model-v1",
+            dimensions={f"key-{index}": "value" for index in range(33)},
+        )
+    with pytest.raises(ValidationError, match="duplicated after normalization"):
+        manager.record(
+            provider="example",
+            model="model-v1",
+            dimensions={"team": "one", " team ": "two"},
+        )
+    with pytest.raises(ValidationError, match="group dimension"):
+        manager.summarize(group_by="dimension:")

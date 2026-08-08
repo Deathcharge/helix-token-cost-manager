@@ -22,13 +22,16 @@ The original source remains recoverable from Git history. The non-standalone pro
 
 **Independent reason to exist:** LiteLLM is primarily a broad provider SDK/gateway and Langfuse is an observability platform. This package is a much smaller offline accounting component with no network, provider, service, or credential dependency. It can complement either product or a direct provider integration.
 
-**Deliberately out of scope for `0.1`:** provider calls, tokenization, prompt/response storage, telemetry, a web UI, authentication, cloud services, subscriptions, automatic price downloads, fuzzy model aliases, tiered/context-sensitive pricing, multi-currency accounting, import/export adapters, and distributed databases.
+**Deliberately out of scope for `0.1`:** provider/network calls, tokenization, prompt/response storage, telemetry export, a web UI, authentication, cloud services, subscriptions, automatic price downloads, fuzzy model aliases, tiered/context-sensitive pricing, multi-currency accounting, bulk ledger import/export, and distributed databases.
 
 ## Evidence from current ecosystem research
 
 - The [Python Packaging User Guide](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/) supports one PEP 621 `pyproject.toml` and a `[project.scripts]` console entry point. The project now follows that shape.
 - [Langfuse token/cost tracking](https://langfuse.com/docs/observability/features/token-and-cost-tracking) treats usage buckets as mutually exclusive, prioritizes ingested/provider usage, supports explicit custom prices, and snapshots inferred cost at ingestion. Those principles informed this package's token contract and immutable rate snapshots.
 - [LiteLLM](https://docs.litellm.ai/) demonstrates demand for provider-neutral cost tracking, but its SDK/gateway scope and large provider catalog support a distinct lightweight offline wedge here.
+- The [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/) define provider-neutral model, response, token-usage, conversation, agent, and workflow attributes. The package accepts those completed span attributes without becoming a telemetry collector.
+- The FinOps Foundation treats [allocation](https://www.finops.org/framework/capabilities/allocation/) and [unit economics](https://www.finops.org/framework/capabilities/unit-economics/) as core practices. Bounded event dimensions and dimension-based reports provide the local accounting primitive needed for team, tenant, environment, feature, and business-unit allocation.
+- Official [OpenAI usage](https://platform.openai.com/docs/api-reference/usage/audio_transcriptions_object) and [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) documentation distinguish cached usage and provider-specific grouping or cache-write semantics. The adapters normalize completed payloads into four mutually exclusive buckets while retaining the original provider/model identity.
 - [GitHub Actions' maintained actions](https://github.com/actions/setup-python/releases) were at `setup-python` v6 in the bounded July 2026 check; CI pins the reviewed `checkout` v6.0.2 and `setup-python` v6.2.0 release commits instead of mutable major tags.
 - The [Python release-status table](https://devguide.python.org/versions/) marks Python 3.9 end-of-life. The supported floor is Python 3.10 so the test stack can use pytest 9.0.3, which fixes [GHSA-6w46-j5rx-g56g](https://github.com/advisories/GHSA-6w46-j5rx-g56g).
 - The isolated build backend is pinned to setuptools 83.0.0, the fixed boundary for its [source-distribution exclusion bypass advisory](https://github.com/advisories/GHSA-h35f-9h28-mq5c).
@@ -45,8 +48,8 @@ The owner asked for the strongest practical licensing fit for attribution and pr
 ## Key product and architecture decisions
 
 - **Explicit rates, no bundled live catalog:** wrong-but-plausible cost is worse than a clear missing-price error. Operators own provider pricing freshness.
-- **Provider-reported tokens:** the package does not infer reasoning/cached usage from content it cannot observe.
-- **Mutually exclusive buckets:** normal input, cached input, and output cannot overlap by contract.
+- **Provider-reported tokens:** provider and OpenTelemetry adapters normalize completed usage metadata; the package does not infer tokens from content it cannot observe.
+- **Mutually exclusive buckets:** normal input, cache-read input, cache-write input, and output cannot overlap by contract.
 - **Decimal arithmetic and string persistence:** costs are quantized to `0.000000000001` USD; SQLite aggregation is done as streamed Python `Decimal` data to avoid float drift.
 - **Effective-dated pricing:** exact provider/model matching selects the newest price at the event timestamp and snapshots it into the immutable event.
 - **SQLite WAL:** the smallest durable local persistence with transactions, cross-process coordination, bounded wait, and no service dependency.
@@ -113,14 +116,13 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 
 ### P2 — valuable post-`0.1` work
 
-1. Provider response adapters that consume usage objects without importing provider SDKs.
-2. Atomic JSONL/CSV import and safe export with dry-run/error ledgers.
+1. Atomic JSONL/CSV import and safe export with dry-run/error ledgers.
+2. Invoice-reconciliation samples and additional adapter conformance fixtures.
 3. Tiered/context-length and additional mutually exclusive usage types.
 4. Multi-currency support with explicit exchange-rate snapshots.
-5. Database backup/restore and migration tooling when schema `2` is needed.
+5. Database backup/restore tooling beyond automatic schema migration.
 6. Optional retention/archival commands for high-volume local stores.
-7. Invoice-reconciliation samples and adapter conformance fixtures.
-8. A cross-platform, hash-locked contributor dependency set and immutable CI runner images if stronger build reproducibility becomes necessary.
+7. A cross-platform, hash-locked contributor dependency set and immutable CI runner images if stronger build reproducibility becomes necessary.
 
 ## Implementation checklist
 
@@ -128,7 +130,9 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 - [x] Zero runtime dependencies and pinned direct contributor tooling.
 - [x] Validated immutable value objects and expected exception hierarchy.
 - [x] Effective-dated exact pricing and fail-closed lookup.
-- [x] SQLite schema `1`, WAL mode, indexes, and permission hardening.
+- [x] SQLite schema `2`, transactional migration, WAL mode, indexes, and permission hardening.
+- [x] Dependency-free OpenAI, Anthropic, and OpenTelemetry adapters with compatibility fixtures.
+- [x] Bounded allocation dimensions with conjunctive filters and dimension grouping.
 - [x] Idempotent event recording with pricing snapshots.
 - [x] Streaming exact reports and UTC filters/groups.
 - [x] Global/project daily/monthly budget checks.
@@ -190,11 +194,11 @@ Local verification was run on Windows from the final candidate worktree. Generat
 
 ## Security, privacy, reliability, and operating cost
 
-The product has no server attack surface, provider/network request path, secret handling, telemetry, or runtime third-party dependency. SQL parameters and fixed grouping choices prevent straightforward injection; scalar limits bound individual inputs, streaming summaries avoid loading the entire event set, and schema and price misses fail closed. Retained history can still grow disk use, scan time, and group cardinality. Events contain accounting metadata only. Database and WAL files still require OS-level protection and consistent backups.
+The product has no server attack surface, provider/network request path, secret handling, telemetry exporter, or runtime third-party dependency. SQL parameters and validated grouping choices prevent straightforward injection; scalar and dimension limits bound individual inputs, streaming summaries avoid loading the entire event set, and schema and price misses fail closed. Retained history can still grow disk use, scan time, and group cardinality. Events contain accounting metadata only. Database and WAL files still require OS-level protection and consistent backups.
 
 Software operating cost is effectively zero beyond local disk/CPU. The package does not incur model/API calls. The user's external LLM cost is computed transparently as:
 
-`input_tokens × input_rate / 1,000,000 + output_tokens × output_rate / 1,000,000 + cached_input_tokens × cached_rate / 1,000,000`
+`input_tokens × input_rate / 1,000,000 + output_tokens × output_rate / 1,000,000 + cache_read_tokens × cache_read_rate / 1,000,000 + cache_write_tokens × cache_write_rate / 1,000,000`
 
 ## Distribution and sustainability model
 

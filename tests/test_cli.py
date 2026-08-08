@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
+import samsarix_token_cost_manager.cli as cli_module
 from samsarix_token_cost_manager.cli import main
 
 
@@ -146,6 +149,7 @@ def test_primary_journey_and_json_contract(tmp_path: Path) -> None:
     assert first_payload["event"]["cost"]["total_usd"] == "7.525000000000"
     assert report_payload == [
         {
+            "cache_write_input_tokens": 0,
             "cached_input_tokens": 100000,
             "group": "demo",
             "input_tokens": 1000000,
@@ -328,3 +332,141 @@ def test_conflicting_idempotency_key_is_an_error(tmp_path: Path) -> None:
 
     assert conflict.returncode == 2
     assert "different usage" in conflict.stderr
+
+
+def test_ingest_openai_payload_and_report_allocation_dimension(tmp_path: Path) -> None:
+    database = tmp_path / "ingest.sqlite3"
+    run_cli(
+        database,
+        "price",
+        "set",
+        "--provider",
+        "openai",
+        "--model",
+        "model-v1",
+        "--input",
+        "2.50",
+        "--output",
+        "10",
+        "--cached-input",
+        "0.25",
+        "--effective-from",
+        "2026-01-01",
+    )
+    payload = tmp_path / "openai-response.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "id": "resp_ingest_1",
+                "model": "model-v1",
+                "usage": {
+                    "input_tokens": 1_000,
+                    "output_tokens": 100,
+                    "input_tokens_details": {"cached_tokens": 600},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ingested = run_cli(
+        database,
+        "ingest",
+        "--format",
+        "openai",
+        "--file",
+        str(payload),
+        "--project",
+        "assistant",
+        "--dimension",
+        "team=product",
+        "--dimension",
+        "feature=answer",
+        json_output=True,
+    )
+    report = run_cli(
+        database,
+        "report",
+        "--dimension",
+        "feature=answer",
+        "--group-by",
+        "dimension:team",
+        json_output=True,
+    )
+
+    ingest_payload = json.loads(ingested.stdout)
+    assert ingested.returncode == 0
+    assert ingest_payload["source_format"] == "openai"
+    assert ingest_payload["event"]["input_tokens"] == 400
+    assert ingest_payload["event"]["cached_input_tokens"] == 600
+    assert ingest_payload["event"]["dimensions"] == {
+        "feature": "answer",
+        "team": "product",
+    }
+    assert json.loads(report.stdout)[0]["group"] == "product"
+
+
+def test_ingest_stdin_human_output_and_input_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "ingest-errors.sqlite3"
+    run_cli(
+        database,
+        "price",
+        "set",
+        "--provider",
+        "anthropic",
+        "--model",
+        "claude-test",
+        "--input",
+        "3",
+        "--output",
+        "15",
+        "--cached-input",
+        "0.3",
+        "--cache-write-input",
+        "3.75",
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        StringIO(
+            json.dumps(
+                {
+                    "id": "msg_stdin",
+                    "model": "claude-test",
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 2,
+                        "cache_read_input_tokens": 20,
+                        "cache_creation_input_tokens": 5,
+                    },
+                }
+            )
+        ),
+    )
+    ingested = run_cli(database, "ingest", "--format", "anthropic", "--file", "-")
+    duplicate_dimension = run_cli(
+        database,
+        "report",
+        "--dimension",
+        "team=one",
+        "--dimension",
+        "team=two",
+    )
+    invalid_json = tmp_path / "invalid.json"
+    invalid_json.write_text("[]", encoding="utf-8")
+    invalid_payload = run_cli(database, "ingest", "--format", "otel", "--file", str(invalid_json))
+    invalid_utf8 = tmp_path / "invalid-utf8.json"
+    invalid_utf8.write_bytes(b"\xff")
+    invalid_encoding = run_cli(database, "ingest", "--format", "otel", "--file", str(invalid_utf8))
+    oversized = tmp_path / "oversized.json"
+    oversized.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli_module, "MAX_INGEST_BYTES", 1)
+    oversized_payload = run_cli(database, "ingest", "--format", "otel", "--file", str(oversized))
+
+    assert ingested.returncode == 0 and "from anthropic" in ingested.stdout
+    assert duplicate_dimension.returncode == 2 and "more than once" in duplicate_dimension.stderr
+    assert invalid_payload.returncode == 2 and "JSON object" in invalid_payload.stderr
+    assert invalid_encoding.returncode == 2 and "could not read" in invalid_encoding.stderr
+    assert oversized_payload.returncode == 2 and "must not exceed" in oversized_payload.stderr
