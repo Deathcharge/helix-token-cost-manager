@@ -544,6 +544,13 @@ def test_schema_one_database_migrates_to_schema_two(tmp_path: Path) -> None:
             'example', 'model-v1', '2026-01-01T00:00:00.000000Z',
             '2.5', '10', '0.25', '2026-01-01T00:00:00.000000Z'
         );
+        INSERT INTO usage_events VALUES (
+            'evt_legacy', 'legacy-request', '2026-02-01T00:00:00.000000Z',
+            '2026-02-01T00:00:00.000000Z', 'example', 'model-v1', 'demo',
+            1000, 500, 100, '2.5', '10', '0.25',
+            '2026-01-01T00:00:00.000000Z', '0.002500000000', '0.005000000000',
+            '0.000025000000', '0.007525000000'
+        );
         PRAGMA user_version = 1;
         """
     )
@@ -552,12 +559,15 @@ def test_schema_one_database_migrates_to_schema_two(tmp_path: Path) -> None:
     with CostManager(database) as migrated:
         version = migrated.connection.execute("PRAGMA user_version").fetchone()[0]
         price = migrated.get_price(provider="example", model="model-v1", at="2026-08-01")
+        rows = migrated.summarize()
         dimension_table = migrated.connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'event_dimensions'"
         ).fetchone()
 
     assert version == 2
     assert price.cache_write_input_usd_per_million == Decimal("2.5")
+    assert rows[0].cache_write_input_tokens == 0
+    assert rows[0].total_usd == Decimal("0.007525000000")
     assert dimension_table is not None
 
 

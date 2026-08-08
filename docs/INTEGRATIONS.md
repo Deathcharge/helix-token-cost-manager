@@ -43,7 +43,7 @@ cache read     = cached input
 output         = reported output
 ```
 
-This matches the inclusive cache semantics shown in the [OpenAI Usage API](https://platform.openai.com/docs/api-reference/usage/audio_transcriptions_object). If the cache subset exceeds total input, ingestion fails closed.
+This matches the inclusive cache semantics in the [OpenAI Responses usage schema](https://platform.openai.com/docs/api-reference/responses/object#responses/object-usage). If the cache subset exceeds total input, ingestion fails closed.
 
 Minimal JSON fixture:
 

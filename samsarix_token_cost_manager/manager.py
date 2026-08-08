@@ -199,32 +199,31 @@ class CostManager:
                 )
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         elif version == 1:
-            with connection:
-                connection.executescript(
-                    """
-                    ALTER TABLE model_prices
-                    ADD COLUMN cache_write_input_rate TEXT NOT NULL DEFAULT '0';
-                    UPDATE model_prices SET cache_write_input_rate = input_rate;
-
-                    ALTER TABLE usage_events
-                    ADD COLUMN cache_write_input_tokens INTEGER NOT NULL DEFAULT 0
-                        CHECK (cache_write_input_tokens >= 0);
-                    ALTER TABLE usage_events
-                    ADD COLUMN cache_write_input_rate TEXT NOT NULL DEFAULT '0';
-                    ALTER TABLE usage_events
-                    ADD COLUMN cache_write_input_cost TEXT NOT NULL DEFAULT '0';
-
-                    CREATE TABLE event_dimensions (
-                        event_id TEXT NOT NULL REFERENCES usage_events(event_id) ON DELETE CASCADE,
-                        key TEXT NOT NULL,
-                        value TEXT NOT NULL,
-                        PRIMARY KEY (event_id, key)
-                    );
-                    CREATE INDEX event_dimensions_lookup
-                    ON event_dimensions (key, value, event_id);
-                    """
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                statements = (
+                    "ALTER TABLE model_prices ADD COLUMN "
+                    "cache_write_input_rate TEXT NOT NULL DEFAULT '0'",
+                    "UPDATE model_prices SET cache_write_input_rate = input_rate",
+                    "ALTER TABLE usage_events ADD COLUMN cache_write_input_tokens "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (cache_write_input_tokens >= 0)",
+                    "ALTER TABLE usage_events ADD COLUMN "
+                    "cache_write_input_rate TEXT NOT NULL DEFAULT '0'",
+                    "ALTER TABLE usage_events ADD COLUMN "
+                    "cache_write_input_cost TEXT NOT NULL DEFAULT '0'",
+                    "CREATE TABLE event_dimensions ("
+                    "event_id TEXT NOT NULL REFERENCES usage_events(event_id) ON DELETE CASCADE, "
+                    "key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (event_id, key))",
+                    "CREATE INDEX event_dimensions_lookup "
+                    "ON event_dimensions (key, value, event_id)",
                 )
-                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                for statement in statements:
+                    connection.execute(statement)
+                connection.execute("PRAGMA user_version = 2")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
     def set_price(
         self,

@@ -406,10 +406,8 @@ def test_ingest_openai_payload_and_report_allocation_dimension(tmp_path: Path) -
     assert json.loads(report.stdout)[0]["group"] == "product"
 
 
-def test_ingest_stdin_human_output_and_input_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    database = tmp_path / "ingest-errors.sqlite3"
+def test_ingest_stdin_human_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database = tmp_path / "stdin-ingest.sqlite3"
     run_cli(
         database,
         "price",
@@ -446,27 +444,54 @@ def test_ingest_stdin_human_output_and_input_errors(
         ),
     )
     ingested = run_cli(database, "ingest", "--format", "anthropic", "--file", "-")
-    duplicate_dimension = run_cli(
-        database,
+
+    assert ingested.returncode == 0
+    assert "from anthropic" in ingested.stdout
+
+
+def test_report_rejects_duplicate_dimension_keys(tmp_path: Path) -> None:
+    result = run_cli(
+        tmp_path / "duplicate-dimension.sqlite3",
         "report",
         "--dimension",
         "team=one",
         "--dimension",
         "team=two",
     )
-    invalid_json = tmp_path / "invalid.json"
-    invalid_json.write_text("[]", encoding="utf-8")
-    invalid_payload = run_cli(database, "ingest", "--format", "otel", "--file", str(invalid_json))
-    invalid_utf8 = tmp_path / "invalid-utf8.json"
-    invalid_utf8.write_bytes(b"\xff")
-    invalid_encoding = run_cli(database, "ingest", "--format", "otel", "--file", str(invalid_utf8))
-    oversized = tmp_path / "oversized.json"
-    oversized.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(cli_module, "MAX_INGEST_BYTES", 1)
-    oversized_payload = run_cli(database, "ingest", "--format", "otel", "--file", str(oversized))
 
-    assert ingested.returncode == 0 and "from anthropic" in ingested.stdout
-    assert duplicate_dimension.returncode == 2 and "more than once" in duplicate_dimension.stderr
-    assert invalid_payload.returncode == 2 and "JSON object" in invalid_payload.stderr
-    assert invalid_encoding.returncode == 2 and "could not read" in invalid_encoding.stderr
-    assert oversized_payload.returncode == 2 and "must not exceed" in oversized_payload.stderr
+    assert result.returncode == 2
+    assert "more than once" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("payload_bytes", "max_bytes", "expected"),
+    (
+        (b"[]", None, "JSON object"),
+        (b"\xff", None, "could not read"),
+        (b"{}", 1, "must not exceed"),
+    ),
+)
+def test_ingest_rejects_invalid_payloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload_bytes: bytes,
+    max_bytes: int | None,
+    expected: str,
+) -> None:
+    database = tmp_path / "invalid-ingest.sqlite3"
+    payload = tmp_path / "payload.json"
+    payload.write_bytes(payload_bytes)
+    if max_bytes is not None:
+        monkeypatch.setattr(cli_module, "MAX_INGEST_BYTES", max_bytes)
+
+    result = run_cli(
+        database,
+        "ingest",
+        "--format",
+        "otel",
+        "--file",
+        str(payload),
+    )
+
+    assert result.returncode == 2
+    assert expected in result.stderr

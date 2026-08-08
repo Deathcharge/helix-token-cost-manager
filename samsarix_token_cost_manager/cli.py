@@ -21,6 +21,7 @@ from .exceptions import CostManagerError, ValidationError
 from .manager import SCHEMA_VERSION, VALID_GROUPS, VALID_PERIODS, CostManager, default_database_path
 from .models import (
     BudgetStatus,
+    RecordResult,
     SummaryRow,
     decimal_text,
     validated_decimal,
@@ -309,6 +310,39 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
         print(pattern.format(*row))
 
 
+def _render_record_result(
+    manager: CostManager,
+    record_result: RecordResult,
+    *,
+    emit_json: bool,
+    source_format: Optional[str] = None,
+) -> None:
+    statuses = manager.check_budgets(
+        estimated_usd=Decimal("0"),
+        project=record_result.event.project,
+        at=record_result.event.occurred_at,
+    )
+    payload = record_result.to_dict()
+    if source_format is not None:
+        payload["source_format"] = source_format
+    payload["budget_statuses"] = [status.to_dict() for status in statuses]
+    if emit_json:
+        _emit_json(payload)
+        return
+    verb = "Recorded" if record_result.created else "Already recorded"
+    origin = f" from {source_format}" if source_format is not None else ""
+    print(
+        f"{verb} {record_result.event.event_id}{origin}: "
+        f"{_format_usd(record_result.event.cost.total_usd)}"
+    )
+    if any(not status.allowed for status in statuses):
+        print(
+            "Warning: recorded spend exceeds an applicable budget; "
+            "use `budget check` before future calls.",
+            file=sys.stderr,
+        )
+
+
 def _dispatch(arguments: argparse.Namespace) -> int:
     database = arguments.db or default_database_path()
     with CostManager(database) as manager:
@@ -379,28 +413,7 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 dimensions=_parse_dimensions(arguments.dimension),
                 occurred_at=arguments.occurred_at,
             )
-            statuses = manager.check_budgets(
-                estimated_usd=Decimal("0"),
-                project=record_result.event.project,
-                at=record_result.event.occurred_at,
-            )
-            payload = record_result.to_dict()
-            payload["budget_statuses"] = [status.to_dict() for status in statuses]
-            if arguments.json:
-                _emit_json(payload)
-            else:
-                verb = "Recorded" if record_result.created else "Already recorded"
-                print(
-                    f"{verb} {record_result.event.event_id}: "
-                    f"{_format_usd(record_result.event.cost.total_usd)}"
-                )
-                denied = [status for status in statuses if not status.allowed]
-                if denied:
-                    print(
-                        "Warning: recorded spend exceeds an applicable budget; "
-                        "use `budget check` before future calls.",
-                        file=sys.stderr,
-                    )
+            _render_record_result(manager, record_result, emit_json=arguments.json)
             return 0
 
         if arguments.command == "ingest":
@@ -417,28 +430,12 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 dimensions=_parse_dimensions(arguments.dimension),
                 occurred_at=arguments.occurred_at,
             )
-            statuses = manager.check_budgets(
-                estimated_usd=Decimal("0"),
-                project=record_result.event.project,
-                at=record_result.event.occurred_at,
+            _render_record_result(
+                manager,
+                record_result,
+                emit_json=arguments.json,
+                source_format=arguments.format,
             )
-            result_payload = record_result.to_dict()
-            result_payload["source_format"] = arguments.format
-            result_payload["budget_statuses"] = [status.to_dict() for status in statuses]
-            if arguments.json:
-                _emit_json(result_payload)
-            else:
-                verb = "Recorded" if record_result.created else "Already recorded"
-                print(
-                    f"{verb} {record_result.event.event_id} from {arguments.format}: "
-                    f"{_format_usd(record_result.event.cost.total_usd)}"
-                )
-                if any(not status.allowed for status in statuses):
-                    print(
-                        "Warning: recorded spend exceeds an applicable budget; "
-                        "use `budget check` before future calls.",
-                        file=sys.stderr,
-                    )
             return 0
 
         if arguments.command == "report":

@@ -73,9 +73,9 @@ Activate the environment first if your shell does not expose its installed scrip
    ```
 
    ```text
-   GROUP             REQUESTS  INPUT    OUTPUT  CACHED INPUT  TOTAL USD
-   ----------------  --------  -------  ------  ------------  ---------
-   example/model-v1  1         1000000  500000  100000        $7.525
+   GROUP             REQUESTS  INPUT    OUTPUT  CACHE READ  CACHE WRITE  TOTAL USD
+   ----------------  --------  -------  ------  ----------  -----------  ---------
+   example/model-v1  1         1000000  500000  100000      0            $7.525
    ```
 
 The database is created automatically. `samsarix-cost init` is available when an explicit initialization step is preferable.
