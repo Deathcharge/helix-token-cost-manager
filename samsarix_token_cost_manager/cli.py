@@ -6,10 +6,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sqlite3
 import sys
+import tempfile
 from collections.abc import Mapping
+from contextlib import suppress
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +22,14 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 from . import __version__
 from .adapters import from_anthropic_response, from_openai_response, from_otel_attributes
 from .exceptions import CostManagerError, ValidationError
+from .ledger import (
+    MAX_LEDGER_BYTES,
+    export_csv,
+    export_jsonl,
+    import_csv,
+    import_jsonl,
+    reconcile_invoice,
+)
 from .manager import SCHEMA_VERSION, VALID_GROUPS, VALID_PERIODS, CostManager, default_database_path
 from .models import (
     BudgetStatus,
@@ -29,6 +41,7 @@ from .models import (
 
 EXIT_ERROR = 2
 EXIT_BUDGET_EXCEEDED = 3
+EXIT_RECONCILIATION_VARIANCE = 4
 MAX_INGEST_BYTES = 10 * 1024 * 1024
 
 
@@ -123,6 +136,37 @@ def _parser() -> argparse.ArgumentParser:
         help=(f"aggregation dimension ({', '.join(VALID_GROUPS)} or dimension:KEY; default: none)"),
     )
 
+    ledger = subparsers.add_parser("ledger", help="export or verify portable usage ledgers")
+    ledger_commands = ledger.add_subparsers(dest="ledger_command", required=True)
+    ledger_export = ledger_commands.add_parser(
+        "export", help="atomically export deterministic JSONL or CSV"
+    )
+    ledger_export.add_argument("--format", choices=("jsonl", "csv"), required=True)
+    ledger_export.add_argument("--file", type=Path, required=True)
+    ledger_export.add_argument("--since", help="inclusive ISO-8601 date/timestamp")
+    ledger_export.add_argument("--until", help="exclusive ISO-8601 date/timestamp")
+    ledger_export.add_argument("--project", help="limit export to one project")
+    ledger_export.add_argument("--force", action="store_true", help="replace an existing file")
+    ledger_import = ledger_commands.add_parser(
+        "import", help="validate and atomically import a JSONL or CSV usage ledger"
+    )
+    ledger_import.add_argument("--format", choices=("jsonl", "csv"), required=True)
+    ledger_import.add_argument("--file", type=Path, required=True)
+    ledger_import.add_argument("--sha256", help="required artifact digest for verification")
+    ledger_import.add_argument("--dry-run", action="store_true", help="validate without writing")
+    ledger_import.add_argument(
+        "--errors-file", type=Path, help="atomically write a JSON error ledger on rejection"
+    )
+    reconcile = ledger_commands.add_parser(
+        "reconcile", help="compare local usage cost with one provider invoice total"
+    )
+    reconcile.add_argument("--provider", required=True)
+    reconcile.add_argument("--period-start", required=True)
+    reconcile.add_argument("--period-end", required=True)
+    reconcile.add_argument("--billed-usd", required=True)
+    reconcile.add_argument("--invoice-id")
+    reconcile.add_argument("--tolerance", default="0.01", help="allowed absolute USD variance")
+
     budget = subparsers.add_parser("budget", help="configure and check spend budgets")
     budget_commands = budget.add_subparsers(dest="budget_command", required=True)
     budget_set = budget_commands.add_parser("set", help="set a global/project budget")
@@ -214,8 +258,53 @@ def _load_json_payload(path: str) -> Mapping[str, object]:
     return payload
 
 
+def _read_bounded_bytes(path: Path, *, maximum: int, label: str) -> bytes:
+    try:
+        if path.stat().st_size > maximum:
+            raise ValidationError(f"{label} must not exceed {maximum} bytes")
+        content = path.read_bytes()
+    except OSError as exc:
+        raise ValidationError(f"could not read {label}: {exc}") from exc
+    if len(content) > maximum:
+        raise ValidationError(f"{label} must not exceed {maximum} bytes")
+    return content
+
+
 def _emit_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False))
+
+
+def _write_artifact(path: Path, content: bytes, *, force: bool) -> None:
+    """Write a complete artifact atomically without leaving partial output."""
+
+    destination = path.resolve()
+    if destination.exists() and not force:
+        raise ValidationError(f"output file already exists: {destination}; use --force to replace")
+    if not destination.parent.is_dir():
+        raise ValidationError(f"output directory does not exist: {destination.parent}")
+    temporary_name: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=destination.parent,
+            delete=False,
+        ) as temporary:
+            temporary_name = temporary.name
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        if destination.exists() and not force:
+            raise ValidationError(
+                f"output file appeared during export: {destination}; use --force to replace"
+            )
+        os.replace(temporary_name, destination)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            with suppress(FileNotFoundError):
+                Path(temporary_name).unlink()
 
 
 def _format_usd(value: Decimal) -> str:
@@ -457,6 +546,88 @@ def _dispatch(arguments: argparse.Namespace) -> int:
             else:
                 _render_report(rows)
             return 0
+
+        if arguments.command == "ledger" and arguments.ledger_command == "export":
+            events = manager.list_events(
+                since=arguments.since,
+                until=arguments.until,
+                project=arguments.project,
+            )
+            exporters = {"jsonl": export_jsonl, "csv": export_csv}
+            artifact = exporters[arguments.format](events)
+            _write_artifact(arguments.file, artifact.content, force=arguments.force)
+            payload = artifact.to_dict()
+            payload["path"] = str(arguments.file.resolve())
+            if arguments.json:
+                _emit_json(payload)
+            else:
+                print(
+                    f"Exported {artifact.records} events to {payload['path']} "
+                    f"(sha256 {artifact.sha256})."
+                )
+            return 0
+
+        if arguments.command == "ledger" and arguments.ledger_command == "import":
+            content = _read_bounded_bytes(arguments.file, maximum=MAX_LEDGER_BYTES, label="ledger")
+            try:
+                importers = {"jsonl": import_jsonl, "csv": import_csv}
+                events = importers[arguments.format](content, expected_sha256=arguments.sha256)
+                import_result = manager.import_events(events, dry_run=arguments.dry_run)
+            except CostManagerError as exc:
+                if arguments.errors_file is not None:
+                    error_record = {
+                        "error": str(exc),
+                        "format": "samsarix-ledger-import-errors",
+                        "format_version": 1,
+                        "source_sha256": hashlib.sha256(content).hexdigest(),
+                    }
+                    error_content = (
+                        json.dumps(
+                            error_record,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                    _write_artifact(arguments.errors_file, error_content, force=False)
+                raise
+            payload = import_result.to_dict()
+            payload["sha256"] = hashlib.sha256(content).hexdigest()
+            if arguments.json:
+                _emit_json(payload)
+            else:
+                verb = "Would import" if arguments.dry_run else "Imported"
+                count = import_result.would_create if arguments.dry_run else import_result.created
+                print(
+                    f"{verb} {count} events; "
+                    f"{import_result.existing} already existed "
+                    f"(sha256 {payload['sha256']})."
+                )
+            return 0
+
+        if arguments.command == "ledger" and arguments.ledger_command == "reconcile":
+            events = manager.list_events(since=arguments.period_start, until=arguments.period_end)
+            reconciliation = reconcile_invoice(
+                events,
+                provider=arguments.provider,
+                billing_period_start=arguments.period_start,
+                billing_period_end=arguments.period_end,
+                billed_total=arguments.billed_usd,
+                invoice_id=arguments.invoice_id,
+                tolerance=arguments.tolerance,
+            )
+            if arguments.json:
+                _emit_json(reconciliation.to_dict())
+            else:
+                status = "MATCH" if reconciliation.reconciled else "VARIANCE"
+                print(
+                    f"{status}: local {_format_usd(reconciliation.local_total)}, "
+                    f"billed {_format_usd(reconciliation.billed_total)}, "
+                    f"difference {_format_usd(reconciliation.variance)} across "
+                    f"{reconciliation.events} events."
+                )
+            return 0 if reconciliation.reconciled else EXIT_RECONCILIATION_VARIANCE
 
         if arguments.command == "budget" and arguments.budget_command == "set":
             manager.set_budget(

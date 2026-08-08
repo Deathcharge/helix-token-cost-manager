@@ -8,6 +8,9 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Deterministic JSONL and RFC 4180 CSV ledger export with atomic file replacement, stable SHA-256 digests, bounded validated import, dry-run conflict analysis, and idempotent transactional restore.
+- Provider-period invoice reconciliation with exact signed variance, explicit tolerance and invoice identity, JSON output, and a distinct non-match exit status.
+
 - Dependency-free adapters for OpenAI Responses/Chat Completions, Anthropic Messages, and OpenTelemetry GenAI usage payloads.
 - Separate cache-creation token pricing and cost snapshots.
 - Bounded allocation dimensions with exact report filters and `dimension:<key>` grouping.

@@ -3,6 +3,7 @@
 
 """Command-level coverage for the documented primary journey."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -495,3 +496,170 @@ def test_ingest_rejects_invalid_payloads(
 
     assert result.returncode == 2
     assert expected in result.stderr
+
+
+def test_ledger_export_is_atomic_filtered_and_refuses_overwrite(tmp_path: Path) -> None:
+    database = tmp_path / "export.sqlite3"
+    output = tmp_path / "ledger.jsonl"
+    run_cli(
+        database,
+        "price",
+        "set",
+        "--provider",
+        "example",
+        "--model",
+        "model-v1",
+        "--input",
+        "1",
+        "--output",
+        "2",
+        "--effective-from",
+        "2026-01-01",
+    )
+    run_cli(
+        database,
+        "record",
+        "--provider",
+        "example",
+        "--model",
+        "model-v1",
+        "--input-tokens",
+        "100",
+        "--project",
+        "included",
+        "--occurred-at",
+        "2026-03-01",
+    )
+    exported = run_cli(
+        database,
+        "--json",
+        "ledger",
+        "export",
+        "--format",
+        "jsonl",
+        "--file",
+        str(output),
+        "--project",
+        "included",
+    )
+    refused = run_cli(database, "ledger", "export", "--format", "csv", "--file", str(output))
+
+    payload = json.loads(exported.stdout)
+    assert exported.returncode == 0
+    assert payload["records"] == 1
+    assert payload["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert refused.returncode == 2
+    assert "already exists" in refused.stderr
+
+
+def test_ledger_import_dry_run_and_reconciliation_exit_codes(tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite3"
+    target = tmp_path / "target.sqlite3"
+    artifact = tmp_path / "ledger.csv"
+    errors = tmp_path / "import-errors.json"
+    run_cli(
+        source,
+        "price",
+        "set",
+        "--provider",
+        "example",
+        "--model",
+        "model-v1",
+        "--input",
+        "1",
+        "--output",
+        "2",
+        "--effective-from",
+        "2026-01-01",
+    )
+    recorded = run_cli(
+        source,
+        "record",
+        "--provider",
+        "example",
+        "--model",
+        "model-v1",
+        "--input-tokens",
+        "1000000",
+        "--occurred-at",
+        "2026-03-01",
+    )
+    assert recorded.returncode == 0
+    exported = run_cli(
+        source, "--json", "ledger", "export", "--format", "csv", "--file", str(artifact)
+    )
+    digest = json.loads(exported.stdout)["sha256"]
+    dry_run = run_cli(
+        target,
+        "--json",
+        "ledger",
+        "import",
+        "--format",
+        "csv",
+        "--file",
+        str(artifact),
+        "--sha256",
+        digest,
+        "--dry-run",
+    )
+    imported = run_cli(
+        target,
+        "ledger",
+        "import",
+        "--format",
+        "csv",
+        "--file",
+        str(artifact),
+        "--sha256",
+        digest,
+    )
+    matched = run_cli(
+        target,
+        "ledger",
+        "reconcile",
+        "--provider",
+        "example",
+        "--period-start",
+        "2026-03-01",
+        "--period-end",
+        "2026-04-01",
+        "--billed-usd",
+        "1",
+    )
+    variance = run_cli(
+        target,
+        "ledger",
+        "reconcile",
+        "--provider",
+        "example",
+        "--period-start",
+        "2026-03-01",
+        "--period-end",
+        "2026-04-01",
+        "--billed-usd",
+        "2",
+    )
+    rejected = run_cli(
+        target,
+        "ledger",
+        "import",
+        "--format",
+        "csv",
+        "--file",
+        str(artifact),
+        "--sha256",
+        "0" * 64,
+        "--errors-file",
+        str(errors),
+    )
+
+    dry_payload = json.loads(dry_run.stdout)
+    assert dry_run.returncode == 0
+    assert dry_payload["created"] == 0 and dry_payload["would_create"] == 1
+    assert imported.returncode == 0 and "Imported 1 events" in imported.stdout
+    assert matched.returncode == 0 and "MATCH" in matched.stdout
+    assert variance.returncode == 4 and "VARIANCE" in variance.stdout
+    assert rejected.returncode == 2 and "sha256 mismatch" in rejected.stderr
+    error_payload = json.loads(errors.read_text(encoding="utf-8"))
+    assert error_payload["format"] == "samsarix-ledger-import-errors"
+    assert error_payload["source_sha256"] == digest

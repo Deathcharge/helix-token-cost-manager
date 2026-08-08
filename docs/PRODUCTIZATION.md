@@ -22,7 +22,7 @@ The original source remains recoverable from Git history. The non-standalone pro
 
 **Independent reason to exist:** LiteLLM is primarily a broad provider SDK/gateway and Langfuse is an observability platform. This package is a much smaller offline accounting component with no network, provider, service, or credential dependency. It can complement either product or a direct provider integration.
 
-**Deliberately out of scope for `0.1`:** provider/network calls, tokenization, prompt/response storage, telemetry export, a web UI, authentication, cloud services, subscriptions, automatic price downloads, fuzzy model aliases, tiered/context-sensitive pricing, multi-currency accounting, bulk ledger import/export, and distributed databases.
+**Deliberately out of scope for `0.1`:** provider/network calls, tokenization, prompt/response storage, telemetry export, a web UI, authentication, cloud services, subscriptions, automatic price downloads, fuzzy model aliases, tiered/context-sensitive pricing, multi-currency accounting, provider-specific invoice-file adapters, and distributed databases.
 
 ## Evidence from current ecosystem research
 
@@ -116,9 +116,8 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 
 ### P2 — valuable post-`0.1` work
 
-1. Atomic JSONL/CSV import and safe export with dry-run/error ledgers.
-2. Invoice-reconciliation samples and additional adapter conformance fixtures.
-3. Tiered/context-length and additional mutually exclusive usage types.
+1. Provider-specific invoice-file adapters and additional adapter conformance fixtures.
+2. Tiered/context-length and additional mutually exclusive usage types.
 4. Multi-currency support with explicit exchange-rate snapshots.
 5. Database backup/restore tooling beyond automatic schema migration.
 6. Optional retention/archival commands for high-volume local stores.
@@ -133,6 +132,7 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 - [x] SQLite schema `2`, transactional migration, WAL mode, indexes, and permission hardening.
 - [x] Dependency-free OpenAI, Anthropic, and OpenTelemetry adapters with compatibility fixtures.
 - [x] Bounded allocation dimensions with conjunctive filters and dimension grouping.
+- [x] Deterministic JSONL/CSV export, validated transactional import, dry-run/error ledgers, stable digests, and provider-total reconciliation.
 - [x] Idempotent event recording with pricing snapshots.
 - [x] Streaming exact reports and UTC filters/groups.
 - [x] Global/project daily/monthly budget checks.

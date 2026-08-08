@@ -29,7 +29,7 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def parse_timestamp(value: Optional[Union[str, date, datetime]], *, field: str) -> datetime:
+def parse_timestamp(value: object, *, field: str) -> datetime:
     """Parse an ISO-8601 date or timestamp and normalize it to UTC."""
 
     if value is None:
@@ -122,7 +122,7 @@ def validated_dimensions(
 
 
 def validated_decimal(
-    value: DecimalInput,
+    value: object,
     *,
     field: str,
     maximum: Optional[Decimal] = None,

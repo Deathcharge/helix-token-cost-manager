@@ -22,6 +22,8 @@ Security invariants:
 - Unknown prices fail closed and historical event prices remain immutable.
 - A request ID cannot be reused for a different usage tuple.
 - A newer database schema is never modified by an older package.
+- Portable ledger imports are size/record bounded, optionally digest-verified, fully validated before a transaction, and reject inconsistent cost arithmetic or identity conflicts.
+- SHA-256 detects artifact changes but does not prove authorship; protect ledgers and error files with the same filesystem controls as the database.
 - Database creation uses private file/directory permissions where the platform supports them.
 - Resource use is bounded per scalar input; summary queries stream rows rather than loading the full event set. Total disk use, scan time, and group cardinality still grow with retained history.
 
