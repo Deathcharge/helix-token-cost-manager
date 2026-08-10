@@ -220,6 +220,8 @@ def test_separate_connections_serialize_import_conflict_check_and_write(tmp_path
     database = tmp_path / "target.sqlite3"
     first = CostManager(database)
     second = CostManager(database)
+    first.open()
+    second.open()
     barrier = Barrier(2)
 
     def import_one(manager: CostManager) -> tuple[int, int]:
