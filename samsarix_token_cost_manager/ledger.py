@@ -13,10 +13,11 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Dict, Iterable, List, Sequence
+from typing import BinaryIO, Dict, Iterable, List, Protocol, Sequence
 
 from .exceptions import ValidationError
 from .models import (
+    GLOBAL_SCOPE,
     MAX_RATE_USD_PER_MILLION,
     CostBreakdown,
     ModelPrice,
@@ -62,6 +63,12 @@ CSV_FIELDS = (
 )
 
 
+class _Digest(Protocol):
+    def update(self, data: bytes) -> None: ...
+
+    def hexdigest(self) -> str: ...
+
+
 @dataclass(frozen=True)
 class LedgerArtifact:
     """One deterministic export plus its verification metadata."""
@@ -83,6 +90,30 @@ class LedgerArtifact:
             "total_usd": decimal_text(self.total_usd),
             "sha256": self.sha256,
             "bytes": len(self.content),
+        }
+
+
+@dataclass(frozen=True)
+class LedgerWriteResult:
+    """Metadata for a ledger serialized directly to a binary stream."""
+
+    media_type: str
+    records: int
+    total_usd: Decimal
+    sha256: str
+    bytes: int
+
+    def to_dict(self) -> Dict[str, object]:
+        """Return metadata suitable for CLI JSON output."""
+
+        return {
+            "format": LEDGER_FORMAT,
+            "format_version": LEDGER_VERSION,
+            "media_type": self.media_type,
+            "records": self.records,
+            "total_usd": decimal_text(self.total_usd),
+            "sha256": self.sha256,
+            "bytes": self.bytes,
         }
 
 
@@ -193,8 +224,8 @@ def event_record(event: UsageEvent) -> Dict[str, object]:
     return {
         "event_id": event.event_id,
         "request_id": event.request_id,
-        "occurred_at": event.to_dict()["occurred_at"],
-        "recorded_at": event.to_dict()["recorded_at"],
+        "occurred_at": format_timestamp(event.occurred_at),
+        "recorded_at": format_timestamp(event.recorded_at),
         "provider": event.provider,
         "model": event.model,
         "project": event.project,
@@ -235,22 +266,90 @@ def _artifact(content: bytes, *, media_type: str, events: Sequence[UsageEvent]) 
     )
 
 
-def export_jsonl(events: Iterable[UsageEvent]) -> LedgerArtifact:
-    """Serialize events as canonical UTF-8 JSON Lines."""
+def _write_chunk(destination: BinaryIO, chunk: bytes, digest: _Digest, current_bytes: int) -> int:
+    new_size = current_bytes + len(chunk)
+    if new_size > MAX_LEDGER_BYTES:
+        raise ValidationError(f"ledger must not exceed {MAX_LEDGER_BYTES} bytes")
+    destination.write(chunk)
+    digest.update(chunk)
+    return new_size
 
-    ordered = _ordered(events)
+
+def write_jsonl(destination: BinaryIO, events: Iterable[UsageEvent]) -> LedgerWriteResult:
+    """Incrementally serialize already-ordered events as canonical JSON Lines."""
+
+    digest = hashlib.sha256()
+    byte_count = 0
+    record_count = 0
+    total = Decimal("0")
     header = {"format": LEDGER_FORMAT, "format_version": LEDGER_VERSION, "type": "manifest"}
-    lines = [json.dumps(header, sort_keys=True, separators=(",", ":"), ensure_ascii=False)]
-    lines.extend(
-        json.dumps(
+    chunk = (json.dumps(header, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    byte_count = _write_chunk(destination, chunk, digest, byte_count)
+    for event in events:
+        if record_count >= MAX_LEDGER_RECORDS:
+            raise ValidationError(f"ledger must not exceed {MAX_LEDGER_RECORDS} records")
+        line = json.dumps(
             {"record": event_record(event), "type": "usage_event"},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         )
-        for event in ordered
+        byte_count = _write_chunk(destination, (line + "\n").encode("utf-8"), digest, byte_count)
+        record_count += 1
+        total += event.cost.total_usd
+    return LedgerWriteResult(
+        media_type="application/x-ndjson",
+        records=record_count,
+        total_usd=total,
+        sha256=digest.hexdigest(),
+        bytes=byte_count,
     )
-    content = ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _csv_chunk(*, header: bool = False, record: Dict[str, object] | None = None) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=CSV_FIELDS, lineterminator="\r\n")
+    if header:
+        writer.writeheader()
+    elif record is not None:
+        writer.writerow(record)
+    return output.getvalue().encode("utf-8")
+
+
+def write_csv(destination: BinaryIO, events: Iterable[UsageEvent]) -> LedgerWriteResult:
+    """Incrementally serialize already-ordered events as RFC 4180 CSV."""
+
+    digest = hashlib.sha256()
+    byte_count = _write_chunk(destination, _csv_chunk(header=True), digest, 0)
+    record_count = 0
+    total = Decimal("0")
+    for event in events:
+        if record_count >= MAX_LEDGER_RECORDS:
+            raise ValidationError(f"ledger must not exceed {MAX_LEDGER_RECORDS} records")
+        record = event_record(event)
+        dimensions = record.pop("dimensions")
+        record["dimensions_json"] = json.dumps(
+            dimensions, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        byte_count = _write_chunk(destination, _csv_chunk(record=record), digest, byte_count)
+        record_count += 1
+        total += event.cost.total_usd
+    return LedgerWriteResult(
+        media_type="text/csv",
+        records=record_count,
+        total_usd=total,
+        sha256=digest.hexdigest(),
+        bytes=byte_count,
+    )
+
+
+def export_jsonl(events: Iterable[UsageEvent]) -> LedgerArtifact:
+    """Serialize events as canonical UTF-8 JSON Lines."""
+
+    ordered = _ordered(events)
+    output = io.BytesIO()
+    write_jsonl(output, ordered)
+    content = output.getvalue()
     return _artifact(content, media_type="application/x-ndjson", events=ordered)
 
 
@@ -258,17 +357,9 @@ def export_csv(events: Iterable[UsageEvent]) -> LedgerArtifact:
     """Serialize events as RFC 4180-compatible UTF-8 CSV."""
 
     ordered = _ordered(events)
-    output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=CSV_FIELDS, lineterminator="\r\n")
-    writer.writeheader()
-    for event in ordered:
-        record = event_record(event)
-        dimensions = record.pop("dimensions")
-        record["dimensions_json"] = json.dumps(
-            dimensions, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        )
-        writer.writerow(record)
-    content = output.getvalue().encode("utf-8")
+    output = io.BytesIO()
+    write_csv(output, ordered)
+    content = output.getvalue()
     return _artifact(content, media_type="text/csv", events=ordered)
 
 
@@ -307,7 +398,9 @@ def record_event(record: Mapping[str, object]) -> UsageEvent:
         else None
     )
     project = (
-        validated_text(project_value, field="project") if project_value not in (None, "") else None
+        validated_text(project_value, field="project", reserved=GLOBAL_SCOPE)
+        if project_value not in (None, "")
+        else None
     )
     dimensions_value = record.get("dimensions", {})
     if not isinstance(dimensions_value, Mapping):

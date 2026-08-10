@@ -9,7 +9,9 @@ import csv
 import hashlib
 import io
 import json
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from threading import Barrier
 
 import pytest
 
@@ -21,6 +23,7 @@ from samsarix_token_cost_manager.ledger import (
     import_jsonl,
     reconcile_invoice,
     verify_digest,
+    write_jsonl,
 )
 
 
@@ -67,6 +70,10 @@ def test_jsonl_export_is_canonical_deterministic_and_verifiable(tmp_path) -> Non
     assert first.records == 2
     assert first.total_usd == sum((event.cost.total_usd for event in events), Decimal("0"))
     assert first.sha256 == hashlib.sha256(first.content).hexdigest()
+    streamed = io.BytesIO()
+    streamed_result = write_jsonl(streamed, iter(events))
+    assert streamed.getvalue() == first.content
+    assert streamed_result.sha256 == first.sha256 and streamed_result.records == 2
     assert verify_digest(first.content, first.sha256.upper()) == first.sha256
     lines = [json.loads(line) for line in first.content.decode("utf-8").splitlines()]
     assert lines[0] == {
@@ -101,6 +108,8 @@ def test_list_events_filters_and_digest_validation(tmp_path) -> None:  # type: i
         assert len(manager.list_events(since="2026-02-02")) == 1
         assert len(manager.list_events(until="2026-02-02")) == 1
         assert manager.list_events(project="support")[0].request_id == "req-later"
+        with pytest.raises(ValidationError, match="since must be earlier than until"):
+            manager.list_events(since="2026-02-02", until="2026-02-02")
 
     with pytest.raises(ValidationError, match="64"):
         verify_digest(b"ledger", "bad")
@@ -166,6 +175,17 @@ def test_invoice_reconciliation_reports_exact_variance_and_tolerance(tmp_path) -
     assert matched.variance == Decimal("0.005000000000")
     assert matched.events == 2 and matched.invoice_id == "inv-2026-02"
     assert mismatched.reconciled is False
+    with pytest.raises(
+        ValidationError,
+        match="billing_period_start must be earlier than billing_period_end",
+    ):
+        reconcile_invoice(
+            events,
+            provider="example",
+            billing_period_start="2026-03-01",
+            billing_period_end="2026-02-01",
+            billed_total="0",
+        )
 
 
 def test_import_conflict_analysis_prevents_partial_batch(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -192,3 +212,26 @@ def test_import_conflict_analysis_prevents_partial_batch(tmp_path) -> None:  # t
 
     assert len(remaining) == 1
     assert remaining[0].request_id == "req-later"
+
+
+def test_separate_connections_serialize_import_conflict_check_and_write(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    with CostManager(tmp_path / "source.sqlite3") as source:
+        event = _events(source)[0]
+    database = tmp_path / "target.sqlite3"
+    first = CostManager(database)
+    second = CostManager(database)
+    barrier = Barrier(2)
+
+    def import_one(manager: CostManager) -> tuple[int, int]:
+        barrier.wait()
+        result = manager.import_events([event])
+        return result.created, result.existing
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(import_one, (first, second)))
+    finally:
+        first.close()
+        second.close()
+
+    assert sorted(results) == [(0, 1), (1, 0)]

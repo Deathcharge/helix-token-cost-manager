@@ -211,6 +211,9 @@ samsarix-cost estimate
 samsarix-cost record
 samsarix-cost ingest
 samsarix-cost report
+samsarix-cost ledger export
+samsarix-cost ledger import
+samsarix-cost ledger reconcile
 samsarix-cost budget set|check
 ```
 

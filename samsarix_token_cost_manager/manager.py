@@ -15,12 +15,13 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Iterator, List, Optional, Sequence, Tuple, Union
 
 from .adapters import UsageMeasurement
 from .exceptions import DuplicateRequestError, PriceNotFoundError, ValidationError
 from .ledger import LedgerImportResult, event_record, record_event
 from .models import (
+    GLOBAL_SCOPE,
     MAX_RATE_USD_PER_MILLION,
     BudgetStatus,
     CostBreakdown,
@@ -41,7 +42,6 @@ from .models import (
 )
 
 SCHEMA_VERSION = 2
-GLOBAL_SCOPE = "*"
 VALID_PERIODS = ("daily", "monthly")
 VALID_GROUPS = ("none", "provider", "model", "project", "day", "month")
 MILLION = Decimal(1_000_000)
@@ -660,6 +660,17 @@ class CostManager:
     ) -> List[UsageEvent]:
         """Return immutable events in deterministic ledger order."""
 
+        return list(self.iter_events(since=since, until=until, project=project))
+
+    def iter_events(
+        self,
+        *,
+        since: Optional[Union[str, datetime]] = None,
+        until: Optional[Union[str, datetime]] = None,
+        project: Optional[str] = None,
+    ) -> Iterator[UsageEvent]:
+        """Yield immutable events in order while serializing shared-connection reads."""
+
         conditions: List[str] = []
         parameters: List[object] = []
         start = parse_timestamp(since, field="since") if since is not None else None
@@ -676,10 +687,12 @@ class CostManager:
             conditions.append("project = ?")
             parameters.append(validated_text(project, field="project", reserved=GLOBAL_SCOPE))
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        rows = self.connection.execute(
-            f"SELECT * FROM usage_events{where} ORDER BY occurred_at, event_id", parameters
-        ).fetchall()
-        return [self._event_from_row(row) for row in rows]
+        with self._lock:
+            rows = self.connection.execute(
+                f"SELECT * FROM usage_events{where} ORDER BY occurred_at, event_id", parameters
+            )
+            for row in rows:
+                yield self._event_from_row(row)
 
     def import_events(
         self, events: Sequence[UsageEvent], *, dry_run: bool = False
@@ -703,25 +716,33 @@ class CostManager:
                     if event.request_id in request_ids:
                         raise ValidationError(f"import repeats request_id {event.request_id!r}")
                     request_ids.add(event.request_id)
-                row = self.connection.execute(
-                    "SELECT * FROM usage_events WHERE event_id = ?", (event.event_id,)
-                ).fetchone()
-                if row is None and event.request_id is not None:
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                for event in events:
                     row = self.connection.execute(
-                        "SELECT * FROM usage_events WHERE request_id = ?", (event.request_id,)
+                        "SELECT * FROM usage_events WHERE event_id = ?", (event.event_id,)
                     ).fetchone()
-                if row is not None:
-                    if self._event_from_row(row) != event:
-                        raise DuplicateRequestError(
-                            f"ledger event {event.event_id!r} conflicts with existing data"
-                        )
-                    existing_count += 1
+                    if row is None and event.request_id is not None:
+                        row = self.connection.execute(
+                            "SELECT * FROM usage_events WHERE request_id = ?", (event.request_id,)
+                        ).fetchone()
+                    if row is not None:
+                        if self._event_from_row(row) != event:
+                            raise DuplicateRequestError(
+                                f"ledger event {event.event_id!r} conflicts with existing data"
+                            )
+                        existing_count += 1
+                    else:
+                        pending.append(event)
+                if dry_run:
+                    self.connection.rollback()
                 else:
-                    pending.append(event)
-            if not dry_run and pending:
-                with self.connection:
                     for event in pending:
                         self._insert_imported_event(event)
+                    self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
         return LedgerImportResult(
             records=len(events),
             created=0 if dry_run else len(pending),

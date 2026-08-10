@@ -17,6 +17,7 @@ import pytest
 
 import samsarix_token_cost_manager.cli as cli_module
 from samsarix_token_cost_manager.cli import main
+from samsarix_token_cost_manager.exceptions import ValidationError
 
 
 @dataclass(frozen=True)
@@ -498,7 +499,9 @@ def test_ingest_rejects_invalid_payloads(
     assert expected in result.stderr
 
 
-def test_ledger_export_is_atomic_filtered_and_refuses_overwrite(tmp_path: Path) -> None:
+def test_ledger_export_is_atomic_filtered_and_refuses_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database = tmp_path / "export.sqlite3"
     output = tmp_path / "ledger.jsonl"
     run_cli(
@@ -530,6 +533,11 @@ def test_ledger_export_is_atomic_filtered_and_refuses_overwrite(tmp_path: Path) 
         "--occurred-at",
         "2026-03-01",
     )
+
+    def fail_if_materialized(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("CLI export must stream with iter_events")
+
+    monkeypatch.setattr(cli_module.CostManager, "list_events", fail_if_materialized)
     exported = run_cli(
         database,
         "--json",
@@ -663,3 +671,69 @@ def test_ledger_import_dry_run_and_reconciliation_exit_codes(tmp_path: Path) -> 
     error_payload = json.loads(errors.read_text(encoding="utf-8"))
     assert error_payload["format"] == "samsarix-ledger-import-errors"
     assert error_payload["source_sha256"] == digest
+
+
+def test_ledger_import_pre_read_failure_writes_error_without_digest(tmp_path: Path) -> None:
+    errors = tmp_path / "read-errors.json"
+    result = run_cli(
+        tmp_path / "target.sqlite3",
+        "ledger",
+        "import",
+        "--format",
+        "jsonl",
+        "--file",
+        str(tmp_path / "missing.jsonl"),
+        "--errors-file",
+        str(errors),
+    )
+
+    assert result.returncode == 2
+    payload = json.loads(errors.read_text(encoding="utf-8"))
+    assert "could not open ledger" in payload["error"]
+    assert "source_sha256" not in payload
+
+
+def test_ledger_import_oversized_writes_error_without_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "oversized.jsonl"
+    errors = tmp_path / "size-errors.json"
+    source.write_bytes(b"{}")
+    monkeypatch.setattr(cli_module, "MAX_LEDGER_BYTES", 1)
+    result = run_cli(
+        tmp_path / "target.sqlite3",
+        "ledger",
+        "import",
+        "--format",
+        "jsonl",
+        "--file",
+        str(source),
+        "--errors-file",
+        str(errors),
+    )
+
+    assert result.returncode == 2
+    payload = json.loads(errors.read_text(encoding="utf-8"))
+    assert "must not exceed 1 bytes" in payload["error"]
+    assert "source_sha256" not in payload
+
+
+def test_bounded_ledger_reader_detects_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "growing.jsonl"
+    source.write_bytes(b"")
+    chunks = iter((b"ab", b""))
+    monkeypatch.setattr(os, "read", lambda _descriptor, _size: next(chunks))
+
+    with pytest.raises(ValidationError, match="must not exceed 1 bytes"):
+        cli_module._read_bounded_bytes(source, maximum=1, label="ledger")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="named pipes are not available")
+def test_bounded_ledger_reader_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "ledger.fifo"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValidationError, match="regular file"):
+        cli_module._read_bounded_bytes(fifo, maximum=100, label="ledger")

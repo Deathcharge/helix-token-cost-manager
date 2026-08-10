@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -17,18 +18,19 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, BinaryIO, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import __version__
 from .adapters import from_anthropic_response, from_openai_response, from_otel_attributes
 from .exceptions import CostManagerError, ValidationError
 from .ledger import (
     MAX_LEDGER_BYTES,
-    export_csv,
-    export_jsonl,
+    LedgerWriteResult,
     import_csv,
     import_jsonl,
     reconcile_invoice,
+    write_csv,
+    write_jsonl,
 )
 from .manager import SCHEMA_VERSION, VALID_GROUPS, VALID_PERIODS, CostManager, default_database_path
 from .models import (
@@ -259,15 +261,36 @@ def _load_json_payload(path: str) -> Mapping[str, object]:
 
 
 def _read_bounded_bytes(path: Path, *, maximum: int, label: str) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        if path.stat().st_size > maximum:
-            raise ValidationError(f"{label} must not exceed {maximum} bytes")
-        content = path.read_bytes()
+        descriptor = os.open(path, flags)
     except OSError as exc:
-        raise ValidationError(f"could not read {label}: {exc}") from exc
-    if len(content) > maximum:
-        raise ValidationError(f"{label} must not exceed {maximum} bytes")
-    return content
+        raise ValidationError(f"could not open {label}: {exc}") from exc
+    try:
+        try:
+            details = os.fstat(descriptor)
+        except OSError as exc:
+            raise ValidationError(f"could not stat {label}: {exc}") from exc
+        if not stat.S_ISREG(details.st_mode):
+            raise ValidationError(f"{label} must be a regular file")
+        if details.st_size > maximum:
+            raise ValidationError(f"{label} must not exceed {maximum} bytes")
+        chunks: List[bytes] = []
+        total = 0
+        while total <= maximum:
+            try:
+                chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - total))
+            except OSError as exc:
+                raise ValidationError(f"could not read {label}: {exc}") from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if total > maximum:
+            raise ValidationError(f"{label} must not exceed {maximum} bytes")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def _emit_json(value: Any) -> None:
@@ -301,6 +324,45 @@ def _write_artifact(path: Path, content: bytes, *, force: bool) -> None:
             )
         os.replace(temporary_name, destination)
         temporary_name = None
+    finally:
+        if temporary_name is not None:
+            with suppress(FileNotFoundError):
+                Path(temporary_name).unlink()
+
+
+def _write_streamed_artifact(
+    path: Path,
+    writer: Callable[[BinaryIO], LedgerWriteResult],
+    *,
+    force: bool,
+) -> LedgerWriteResult:
+    """Stream and atomically publish an artifact without retaining its bytes."""
+
+    destination = path.resolve()
+    if destination.exists() and not force:
+        raise ValidationError(f"output file already exists: {destination}; use --force to replace")
+    if not destination.parent.is_dir():
+        raise ValidationError(f"output directory does not exist: {destination.parent}")
+    temporary_name: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=destination.parent,
+            delete=False,
+        ) as temporary:
+            temporary_name = temporary.name
+            result = writer(cast(BinaryIO, temporary))
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        if destination.exists() and not force:
+            raise ValidationError(
+                f"output file appeared during export: {destination}; use --force to replace"
+            )
+        os.replace(temporary_name, destination)
+        temporary_name = None
+        return result
     finally:
         if temporary_name is not None:
             with suppress(FileNotFoundError):
@@ -548,14 +610,17 @@ def _dispatch(arguments: argparse.Namespace) -> int:
             return 0
 
         if arguments.command == "ledger" and arguments.ledger_command == "export":
-            events = manager.list_events(
+            export_events = manager.iter_events(
                 since=arguments.since,
                 until=arguments.until,
                 project=arguments.project,
             )
-            exporters = {"jsonl": export_jsonl, "csv": export_csv}
-            artifact = exporters[arguments.format](events)
-            _write_artifact(arguments.file, artifact.content, force=arguments.force)
+            writers = {"jsonl": write_jsonl, "csv": write_csv}
+            artifact = _write_streamed_artifact(
+                arguments.file,
+                lambda destination: writers[arguments.format](destination, export_events),
+                force=arguments.force,
+            )
             payload = artifact.to_dict()
             payload["path"] = str(arguments.file.resolve())
             if arguments.json:
@@ -568,19 +633,25 @@ def _dispatch(arguments: argparse.Namespace) -> int:
             return 0
 
         if arguments.command == "ledger" and arguments.ledger_command == "import":
-            content = _read_bounded_bytes(arguments.file, maximum=MAX_LEDGER_BYTES, label="ledger")
+            content: Optional[bytes] = None
             try:
+                content = _read_bounded_bytes(
+                    arguments.file, maximum=MAX_LEDGER_BYTES, label="ledger"
+                )
                 importers = {"jsonl": import_jsonl, "csv": import_csv}
-                events = importers[arguments.format](content, expected_sha256=arguments.sha256)
-                import_result = manager.import_events(events, dry_run=arguments.dry_run)
+                imported_events = importers[arguments.format](
+                    content, expected_sha256=arguments.sha256
+                )
+                import_result = manager.import_events(imported_events, dry_run=arguments.dry_run)
             except CostManagerError as exc:
                 if arguments.errors_file is not None:
                     error_record = {
                         "error": str(exc),
                         "format": "samsarix-ledger-import-errors",
                         "format_version": 1,
-                        "source_sha256": hashlib.sha256(content).hexdigest(),
                     }
+                    if content is not None:
+                        error_record["source_sha256"] = hashlib.sha256(content).hexdigest()
                     error_content = (
                         json.dumps(
                             error_record,
@@ -592,6 +663,7 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                     ).encode("utf-8")
                     _write_artifact(arguments.errors_file, error_content, force=False)
                 raise
+            assert content is not None
             payload = import_result.to_dict()
             payload["sha256"] = hashlib.sha256(content).hexdigest()
             if arguments.json:
@@ -607,9 +679,11 @@ def _dispatch(arguments: argparse.Namespace) -> int:
             return 0
 
         if arguments.command == "ledger" and arguments.ledger_command == "reconcile":
-            events = manager.list_events(since=arguments.period_start, until=arguments.period_end)
+            reconciliation_events = manager.list_events(
+                since=arguments.period_start, until=arguments.period_end
+            )
             reconciliation = reconcile_invoice(
-                events,
+                reconciliation_events,
                 provider=arguments.provider,
                 billing_period_start=arguments.period_start,
                 billing_period_end=arguments.period_end,
