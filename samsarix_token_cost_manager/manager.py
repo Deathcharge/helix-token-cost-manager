@@ -15,11 +15,13 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Iterator, List, Optional, Sequence, Tuple, Union
 
 from .adapters import UsageMeasurement
 from .exceptions import DuplicateRequestError, PriceNotFoundError, ValidationError
+from .ledger import LedgerImportResult, event_record, record_event
 from .models import (
+    GLOBAL_SCOPE,
     MAX_RATE_USD_PER_MILLION,
     BudgetStatus,
     CostBreakdown,
@@ -40,7 +42,6 @@ from .models import (
 )
 
 SCHEMA_VERSION = 2
-GLOBAL_SCOPE = "*"
 VALID_PERIODS = ("daily", "monthly")
 VALID_GROUPS = ("none", "provider", "model", "project", "day", "month")
 MILLION = Decimal(1_000_000)
@@ -649,6 +650,148 @@ class CostManager:
             (event_id,),
         ).fetchall()
         return tuple((row["key"], row["value"]) for row in rows)
+
+    def list_events(
+        self,
+        *,
+        since: Optional[Union[str, datetime]] = None,
+        until: Optional[Union[str, datetime]] = None,
+        project: Optional[str] = None,
+    ) -> List[UsageEvent]:
+        """Return immutable events in deterministic ledger order."""
+
+        return list(self.iter_events(since=since, until=until, project=project))
+
+    def iter_events(
+        self,
+        *,
+        since: Optional[Union[str, datetime]] = None,
+        until: Optional[Union[str, datetime]] = None,
+        project: Optional[str] = None,
+    ) -> Iterator[UsageEvent]:
+        """Yield immutable events in order while serializing shared-connection reads."""
+
+        conditions: List[str] = []
+        parameters: List[object] = []
+        start = parse_timestamp(since, field="since") if since is not None else None
+        end = parse_timestamp(until, field="until") if until is not None else None
+        if start is not None and end is not None and start >= end:
+            raise ValidationError("since must be earlier than until")
+        if start is not None:
+            conditions.append("occurred_at >= ?")
+            parameters.append(format_timestamp(start))
+        if end is not None:
+            conditions.append("occurred_at < ?")
+            parameters.append(format_timestamp(end))
+        if project is not None:
+            conditions.append("project = ?")
+            parameters.append(validated_text(project, field="project", reserved=GLOBAL_SCOPE))
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self.connection.execute(
+                f"SELECT * FROM usage_events{where} ORDER BY occurred_at, event_id", parameters
+            )
+            for row in rows:
+                yield self._event_from_row(row)
+
+    def import_events(
+        self, events: Sequence[UsageEvent], *, dry_run: bool = False
+    ) -> LedgerImportResult:
+        """Validate conflicts, then import exact cost snapshots in one transaction."""
+
+        pending: List[UsageEvent] = []
+        existing_count = 0
+        event_ids: set[str] = set()
+        request_ids: set[str] = set()
+        with self._lock:
+            for event in events:
+                if not isinstance(event, UsageEvent) or record_event(event_record(event)) != event:
+                    raise ValidationError(
+                        "import_events requires fully validated UsageEvent values"
+                    )
+                if event.event_id in event_ids:
+                    raise ValidationError(f"import repeats event_id {event.event_id!r}")
+                event_ids.add(event.event_id)
+                if event.request_id is not None:
+                    if event.request_id in request_ids:
+                        raise ValidationError(f"import repeats request_id {event.request_id!r}")
+                    request_ids.add(event.request_id)
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                for event in events:
+                    row = self.connection.execute(
+                        "SELECT * FROM usage_events WHERE event_id = ?", (event.event_id,)
+                    ).fetchone()
+                    if row is None and event.request_id is not None:
+                        row = self.connection.execute(
+                            "SELECT * FROM usage_events WHERE request_id = ?", (event.request_id,)
+                        ).fetchone()
+                    if row is not None:
+                        if self._event_from_row(row) != event:
+                            raise DuplicateRequestError(
+                                f"ledger event {event.event_id!r} conflicts with existing data"
+                            )
+                        existing_count += 1
+                    else:
+                        pending.append(event)
+                if dry_run:
+                    self.connection.rollback()
+                else:
+                    for event in pending:
+                        self._insert_imported_event(event)
+                    self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+        return LedgerImportResult(
+            records=len(events),
+            created=0 if dry_run else len(pending),
+            would_create=len(pending),
+            existing=existing_count,
+            dry_run=dry_run,
+        )
+
+    def _insert_imported_event(self, event: UsageEvent) -> None:
+        price = event.cost.price
+        self.connection.execute(
+            """
+            INSERT INTO usage_events (
+                event_id, request_id, occurred_at, recorded_at, provider,
+                model, project, input_tokens, output_tokens,
+                cached_input_tokens, cache_write_input_tokens, input_rate,
+                output_rate, cached_input_rate, cache_write_input_rate,
+                price_effective_from, input_cost, output_cost,
+                cached_input_cost, cache_write_input_cost, total_cost
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_id,
+                event.request_id,
+                format_timestamp(event.occurred_at),
+                format_timestamp(event.recorded_at),
+                event.provider,
+                event.model,
+                event.project,
+                event.input_tokens,
+                event.output_tokens,
+                event.cached_input_tokens,
+                event.cache_write_input_tokens,
+                decimal_text(price.input_usd_per_million),
+                decimal_text(price.output_usd_per_million),
+                decimal_text(price.cached_input_usd_per_million),
+                decimal_text(price.cache_write_input_usd_per_million),
+                format_timestamp(price.effective_from),
+                decimal_text(event.cost.input_usd),
+                decimal_text(event.cost.output_usd),
+                decimal_text(event.cost.cached_input_usd),
+                decimal_text(event.cost.cache_write_input_usd),
+                decimal_text(event.cost.total_usd),
+            ),
+        )
+        self.connection.executemany(
+            "INSERT INTO event_dimensions (event_id, key, value) VALUES (?, ?, ?)",
+            ((event.event_id, key, value) for key, value in event.dimensions),
+        )
 
     def summarize(
         self,

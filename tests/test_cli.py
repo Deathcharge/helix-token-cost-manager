@@ -3,6 +3,7 @@
 
 """Command-level coverage for the documented primary journey."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -16,6 +17,7 @@ import pytest
 
 import samsarix_token_cost_manager.cli as cli_module
 from samsarix_token_cost_manager.cli import main
+from samsarix_token_cost_manager.exceptions import ValidationError
 
 
 @dataclass(frozen=True)
@@ -495,3 +497,243 @@ def test_ingest_rejects_invalid_payloads(
 
     assert result.returncode == 2
     assert expected in result.stderr
+
+
+def test_ledger_export_is_atomic_filtered_and_refuses_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "export.sqlite3"
+    output = tmp_path / "ledger.jsonl"
+    run_cli(
+        database,
+        "price",
+        "set",
+        "--provider",
+        "example",
+        "--model",
+        "model-v1",
+        "--input",
+        "1",
+        "--output",
+        "2",
+        "--effective-from",
+        "2026-01-01",
+    )
+    run_cli(
+        database,
+        "record",
+        "--provider",
+        "example",
+        "--model",
+        "model-v1",
+        "--input-tokens",
+        "100",
+        "--project",
+        "included",
+        "--occurred-at",
+        "2026-03-01",
+    )
+
+    def fail_if_materialized(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("CLI export must stream with iter_events")
+
+    monkeypatch.setattr(cli_module.CostManager, "list_events", fail_if_materialized)
+    exported = run_cli(
+        database,
+        "--json",
+        "ledger",
+        "export",
+        "--format",
+        "jsonl",
+        "--file",
+        str(output),
+        "--project",
+        "included",
+    )
+    refused = run_cli(database, "ledger", "export", "--format", "csv", "--file", str(output))
+
+    payload = json.loads(exported.stdout)
+    assert exported.returncode == 0
+    assert payload["records"] == 1
+    assert payload["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert refused.returncode == 2
+    assert "already exists" in refused.stderr
+
+
+def test_ledger_import_dry_run_and_reconciliation_exit_codes(tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite3"
+    target = tmp_path / "target.sqlite3"
+    artifact = tmp_path / "ledger.csv"
+    errors = tmp_path / "import-errors.json"
+    run_cli(
+        source,
+        "price",
+        "set",
+        "--provider",
+        "example",
+        "--model",
+        "model-v1",
+        "--input",
+        "1",
+        "--output",
+        "2",
+        "--effective-from",
+        "2026-01-01",
+    )
+    recorded = run_cli(
+        source,
+        "record",
+        "--provider",
+        "example",
+        "--model",
+        "model-v1",
+        "--input-tokens",
+        "1000000",
+        "--occurred-at",
+        "2026-03-01",
+    )
+    assert recorded.returncode == 0
+    exported = run_cli(
+        source, "--json", "ledger", "export", "--format", "csv", "--file", str(artifact)
+    )
+    digest = json.loads(exported.stdout)["sha256"]
+    dry_run = run_cli(
+        target,
+        "--json",
+        "ledger",
+        "import",
+        "--format",
+        "csv",
+        "--file",
+        str(artifact),
+        "--sha256",
+        digest,
+        "--dry-run",
+    )
+    imported = run_cli(
+        target,
+        "ledger",
+        "import",
+        "--format",
+        "csv",
+        "--file",
+        str(artifact),
+        "--sha256",
+        digest,
+    )
+    matched = run_cli(
+        target,
+        "ledger",
+        "reconcile",
+        "--provider",
+        "example",
+        "--period-start",
+        "2026-03-01",
+        "--period-end",
+        "2026-04-01",
+        "--billed-usd",
+        "1",
+    )
+    variance = run_cli(
+        target,
+        "ledger",
+        "reconcile",
+        "--provider",
+        "example",
+        "--period-start",
+        "2026-03-01",
+        "--period-end",
+        "2026-04-01",
+        "--billed-usd",
+        "2",
+    )
+    rejected = run_cli(
+        target,
+        "ledger",
+        "import",
+        "--format",
+        "csv",
+        "--file",
+        str(artifact),
+        "--sha256",
+        "0" * 64,
+        "--errors-file",
+        str(errors),
+    )
+
+    dry_payload = json.loads(dry_run.stdout)
+    assert dry_run.returncode == 0
+    assert dry_payload["created"] == 0 and dry_payload["would_create"] == 1
+    assert imported.returncode == 0 and "Imported 1 events" in imported.stdout
+    assert matched.returncode == 0 and "MATCH" in matched.stdout
+    assert variance.returncode == 4 and "VARIANCE" in variance.stdout
+    assert rejected.returncode == 2 and "sha256 mismatch" in rejected.stderr
+    error_payload = json.loads(errors.read_text(encoding="utf-8"))
+    assert error_payload["format"] == "samsarix-ledger-import-errors"
+    assert error_payload["source_sha256"] == digest
+
+
+def test_ledger_import_pre_read_failure_writes_error_without_digest(tmp_path: Path) -> None:
+    errors = tmp_path / "read-errors.json"
+    result = run_cli(
+        tmp_path / "target.sqlite3",
+        "ledger",
+        "import",
+        "--format",
+        "jsonl",
+        "--file",
+        str(tmp_path / "missing.jsonl"),
+        "--errors-file",
+        str(errors),
+    )
+
+    assert result.returncode == 2
+    payload = json.loads(errors.read_text(encoding="utf-8"))
+    assert "could not open ledger" in payload["error"]
+    assert "source_sha256" not in payload
+
+
+def test_ledger_import_oversized_writes_error_without_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "oversized.jsonl"
+    errors = tmp_path / "size-errors.json"
+    source.write_bytes(b"{}")
+    monkeypatch.setattr(cli_module, "MAX_LEDGER_BYTES", 1)
+    result = run_cli(
+        tmp_path / "target.sqlite3",
+        "ledger",
+        "import",
+        "--format",
+        "jsonl",
+        "--file",
+        str(source),
+        "--errors-file",
+        str(errors),
+    )
+
+    assert result.returncode == 2
+    payload = json.loads(errors.read_text(encoding="utf-8"))
+    assert "must not exceed 1 bytes" in payload["error"]
+    assert "source_sha256" not in payload
+
+
+def test_bounded_ledger_reader_detects_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "growing.jsonl"
+    source.write_bytes(b"")
+    chunks = iter((b"ab", b""))
+    monkeypatch.setattr(os, "read", lambda _descriptor, _size: next(chunks))
+
+    with pytest.raises(ValidationError, match="must not exceed 1 bytes"):
+        cli_module._read_bounded_bytes(source, maximum=1, label="ledger")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="named pipes are not available")
+def test_bounded_ledger_reader_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "ledger.fifo"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValidationError, match="regular file"):
+        cli_module._read_bounded_bytes(fifo, maximum=100, label="ledger")

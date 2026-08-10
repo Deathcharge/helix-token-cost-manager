@@ -16,6 +16,8 @@ It is for developers and small teams that need cost accounting without adopting 
 - Prevents duplicate accounting when a stable request ID is retried.
 - Groups spend by provider, model, project, day, or month.
 - Filters and groups by bounded allocation dimensions such as team, feature, environment, workflow, or customer tier.
+- Exports and atomically imports deterministic JSONL/CSV ledgers with SHA-256 verification.
+- Reconciles local provider-period totals against invoices without rewriting history.
 - Checks global and per-project daily/monthly limits with automation-friendly exit codes.
 - Keeps prompts, responses, credentials, and usage data on the local machine.
 
@@ -107,6 +109,18 @@ samsarix-cost --db costs.sqlite3 report \
 
 See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for response fixtures, normalization rules, privacy guidance, and real deployment patterns.
 
+## Export, restore, and reconcile accounting evidence
+
+```bash
+samsarix-cost --db costs.sqlite3 ledger export --format jsonl --file usage.jsonl
+samsarix-cost --db restored.sqlite3 ledger import --format jsonl --file usage.jsonl --dry-run
+samsarix-cost --db costs.sqlite3 ledger reconcile \
+  --provider openai --period-start 2026-07-01 --period-end 2026-08-01 \
+  --billed-usd 123.45 --invoice-id inv-2026-07
+```
+
+Exports are deterministic and report a SHA-256. Import validates every row and its cost arithmetic before one transaction; identical repeats are idempotent. Reconciliation exits `4` for an out-of-tolerance variance and never changes recorded history. See [docs/PORTABLE_LEDGER.md](docs/PORTABLE_LEDGER.md) for the format and trust boundary.
+
 ## Check a budget before a call
 
 ```bash
@@ -197,6 +211,9 @@ samsarix-cost estimate
 samsarix-cost record
 samsarix-cost ingest
 samsarix-cost report
+samsarix-cost ledger export
+samsarix-cost ledger import
+samsarix-cost ledger reconcile
 samsarix-cost budget set|check
 ```
 
@@ -246,7 +263,7 @@ See [SECURITY.md](SECURITY.md) for the threat boundary and disclosure process.
 - Pricing must be maintained by the operator; no bundled catalog can silently become stale.
 - Only USD and token-based input/output/cache-read/cache-write rates are supported in schema version `2`.
 - The adapters normalize completed response/telemetry payloads but do not wrap SDK calls or fetch provider data.
-- There is no tokenizer, tiered/context-length pricing, non-token tool/runtime charging, bulk import/export command, invoice reconciliation, dashboard, or distributed aggregation.
+- There is no tokenizer, tiered/context-length pricing, non-token tool/runtime charging, provider-specific invoice-file adapter, dashboard, or distributed aggregation.
 - SQLite is intended for local/single-host use, not a shared network filesystem.
 - Budget checks cannot stop calls made through unrelated code; integrate the exit code or Python result into the caller.
 

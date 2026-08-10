@@ -19,6 +19,7 @@ DecimalInput = Union[Decimal, int, str, float]
 MAX_TEXT_LENGTH = 200
 MAX_DIMENSIONS = 32
 MAX_TOKENS = 1_000_000_000_000
+GLOBAL_SCOPE = "*"
 MAX_RATE_USD_PER_MILLION = Decimal("1000000")
 USD_QUANTUM = Decimal("0.000000000001")
 
@@ -29,7 +30,7 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def parse_timestamp(value: Optional[Union[str, date, datetime]], *, field: str) -> datetime:
+def parse_timestamp(value: object, *, field: str) -> datetime:
     """Parse an ISO-8601 date or timestamp and normalize it to UTC."""
 
     if value is None:
@@ -122,7 +123,7 @@ def validated_dimensions(
 
 
 def validated_decimal(
-    value: DecimalInput,
+    value: object,
     *,
     field: str,
     maximum: Optional[Decimal] = None,

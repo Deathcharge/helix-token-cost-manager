@@ -15,6 +15,17 @@ from .exceptions import (
     PriceNotFoundError,
     ValidationError,
 )
+from .ledger import (
+    LedgerArtifact,
+    LedgerImportResult,
+    ReconciliationResult,
+    export_csv,
+    export_jsonl,
+    import_csv,
+    import_jsonl,
+    reconcile_invoice,
+    verify_digest,
+)
 from .manager import CostManager, default_database_path
 from .models import (
     BudgetStatus,
@@ -31,17 +42,26 @@ __all__ = [
     "CostManager",
     "CostManagerError",
     "DuplicateRequestError",
+    "LedgerArtifact",
+    "LedgerImportResult",
     "ModelPrice",
     "PriceNotFoundError",
+    "ReconciliationResult",
     "RecordResult",
     "SummaryRow",
     "UsageEvent",
     "UsageMeasurement",
     "ValidationError",
     "default_database_path",
+    "export_csv",
+    "export_jsonl",
     "from_anthropic_response",
     "from_openai_response",
     "from_otel_attributes",
+    "import_csv",
+    "import_jsonl",
+    "reconcile_invoice",
+    "verify_digest",
 ]
 
 __version__ = "0.1.0"
