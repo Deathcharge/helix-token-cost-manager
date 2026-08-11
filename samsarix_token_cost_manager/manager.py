@@ -371,6 +371,7 @@ class CostManager:
             input_token_max=normalized_maximum,
         )
         with self._lock, self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
             sibling_rows = self.connection.execute(
                 """
                 SELECT input_token_min, input_token_max

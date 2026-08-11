@@ -204,6 +204,42 @@ def test_price_book_rejects_overlap_and_missing_selector(manager: CostManager) -
         )
 
 
+def test_separate_connections_serialize_price_range_validation(tmp_path: Path) -> None:
+    database = tmp_path / "prices.sqlite3"
+    first = CostManager(database).open()
+    second = CostManager(database).open()
+    barrier = Barrier(2)
+
+    def set_range(cost_manager: CostManager, minimum: int, maximum: int) -> str:
+        barrier.wait()
+        try:
+            cost_manager.set_price(
+                provider="example",
+                model="tiered",
+                input_usd_per_million="1",
+                output_usd_per_million="2",
+                effective_from="2026-01-01",
+                input_token_min=minimum,
+                input_token_max=maximum,
+            )
+            return "created"
+        except ValidationError:
+            return "overlap"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = (
+                executor.submit(set_range, first, 0, 100),
+                executor.submit(set_range, second, 50, 150),
+            )
+            results = [future.result() for future in futures]
+        assert sorted(results) == ["created", "overlap"]
+        assert len(first.list_prices()) == 1
+    finally:
+        first.close()
+        second.close()
+
+
 def test_request_id_is_idempotent_and_conflicts_are_rejected(
     manager: CostManager,
 ) -> None:
