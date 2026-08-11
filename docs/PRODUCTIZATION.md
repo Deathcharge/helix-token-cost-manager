@@ -22,7 +22,7 @@ The original source remains recoverable from Git history. The non-standalone pro
 
 **Independent reason to exist:** LiteLLM is primarily a broad provider SDK/gateway and Langfuse is an observability platform. This package is a much smaller offline accounting component with no network, provider, service, or credential dependency. It can complement either product or a direct provider integration.
 
-**Deliberately out of scope for `0.1`:** provider/network calls, tokenization, prompt/response storage, telemetry export, a web UI, authentication, cloud services, subscriptions, automatic price downloads, fuzzy model aliases, tiered/context-sensitive pricing, multi-currency accounting, provider-specific invoice-file adapters, and distributed databases.
+**Deliberately out of scope for `0.1`:** provider/network calls, tokenization, prompt/response storage, telemetry export, a web UI, authentication, cloud services, subscriptions, automatic price downloads, fuzzy model aliases, multi-currency accounting, non-token SKU charging, provider-specific invoice-file adapters, and distributed databases.
 
 ## Evidence from current ecosystem research
 
@@ -51,7 +51,7 @@ The owner asked for the strongest practical licensing fit for attribution and pr
 - **Provider-reported tokens:** provider and OpenTelemetry adapters normalize completed usage metadata; the package does not infer tokens from content it cannot observe.
 - **Mutually exclusive buckets:** normal input, cache-read input, cache-write input, and output cannot overlap by contract.
 - **Decimal arithmetic and string persistence:** costs are quantized to `0.000000000001` USD; SQLite aggregation is done as streamed Python `Decimal` data to avoid float drift.
-- **Effective-dated pricing:** exact provider/model matching selects the newest price at the event timestamp and snapshots it into the immutable event.
+- **Effective-dated price books:** exact provider/model/plan/tier/region and total-input-band matching selects the newest applicable rule and snapshots its selector, bounds, and rates into the immutable event.
 - **SQLite WAL:** the smallest durable local persistence with transactions, cross-process coordination, bounded wait, and no service dependency.
 - **Idempotent record keys:** request ID retries return the existing identical event; conflicting reuse fails.
 - **Advisory budgets:** checks return a stable denial code before spend. Post-call recording never discards incurred usage.
@@ -117,19 +117,19 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 ### P2 — valuable post-`0.1` work
 
 1. Provider-specific invoice-file adapters and additional adapter conformance fixtures.
-2. Tiered/context-length and additional mutually exclusive usage types.
-4. Multi-currency support with explicit exchange-rate snapshots.
-5. Database backup/restore tooling beyond automatic schema migration.
-6. Optional retention/archival commands for high-volume local stores.
-7. A cross-platform, hash-locked contributor dependency set and immutable CI runner images if stronger build reproducibility becomes necessary.
+2. Additional mutually exclusive usage types and non-token billable units.
+3. Multi-currency support with explicit exchange-rate snapshots.
+4. Database backup/restore tooling beyond automatic schema migration.
+5. Optional retention/archival commands for high-volume local stores.
+6. A cross-platform, hash-locked contributor dependency set and immutable CI runner images if stronger build reproducibility becomes necessary.
 
 ## Implementation checklist
 
 - [x] One PEP 621 package definition and console script.
 - [x] Zero runtime dependencies and pinned direct contributor tooling.
 - [x] Validated immutable value objects and expected exception hierarchy.
-- [x] Effective-dated exact pricing and fail-closed lookup.
-- [x] SQLite schema `2`, transactional migration, WAL mode, indexes, and permission hardening.
+- [x] Effective-dated exact price books with plan, service-tier, region, and context-threshold selectors and fail-closed lookup.
+- [x] SQLite schema `3`, transactional migration, WAL mode, indexes, and permission hardening.
 - [x] Dependency-free OpenAI, Anthropic, and OpenTelemetry adapters with compatibility fixtures.
 - [x] Bounded allocation dimensions with conjunctive filters and dimension grouping.
 - [x] Deterministic JSONL/CSV export, validated transactional import, dry-run/error ledgers, stable digests, and provider-total reconciliation.

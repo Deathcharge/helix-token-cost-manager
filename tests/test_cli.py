@@ -66,6 +66,78 @@ def configure_price(database: Path) -> None:
     assert result.returncode == 0
 
 
+def test_cli_selects_explicit_price_plan_tier_region_and_threshold(tmp_path: Path) -> None:
+    database = tmp_path / "costs.sqlite3"
+    selector_arguments = (
+        "--price-plan",
+        "contract-a",
+        "--service-tier",
+        "priority",
+        "--region",
+        "us",
+    )
+    rules = (
+        ("1", "2026-01-01", "0", "99"),
+        ("4", "2026-01-01", "100", None),
+        ("6", "2026-06-01", "100", None),
+    )
+    for rate, effective_from, minimum, maximum in rules:
+        arguments = [
+            "price",
+            "set",
+            "--provider",
+            "example",
+            "--model",
+            "tiered",
+            "--input",
+            rate,
+            "--output",
+            "20",
+            *selector_arguments,
+            "--input-token-min",
+            minimum,
+            "--effective-from",
+            effective_from,
+        ]
+        if maximum is not None:
+            arguments.extend(("--input-token-max", maximum))
+        assert run_cli(database, *arguments).returncode == 0
+
+    def estimate(input_tokens: int, at: str) -> dict:  # type: ignore[type-arg]
+        result = run_cli(
+            database,
+            "estimate",
+            "--provider",
+            "example",
+            "--model",
+            "tiered",
+            "--input-tokens",
+            str(input_tokens),
+            *selector_arguments,
+            "--at",
+            at,
+            json_output=True,
+        )
+        assert result.returncode == 0
+        return json.loads(result.stdout)
+
+    lower = estimate(99, "2026-05-31T23:59:59Z")
+    upper = estimate(100, "2026-05-31T23:59:59Z")
+    repriced = estimate(100, "2026-06-01T00:00:00Z")
+
+    assert lower["price"]["input_usd_per_million"] == "1"
+    assert lower["price"]["input_token_min"] == 0
+    assert upper["price"]["input_usd_per_million"] == "4"
+    assert upper["price"]["input_token_min"] == 100
+    assert upper["price"]["effective_from"] == "2026-01-01T00:00:00.000000Z"
+    assert repriced["price"]["input_usd_per_million"] == "6"
+    assert repriced["price"]["input_token_min"] == 100
+    assert repriced["price"]["effective_from"] == "2026-06-01T00:00:00.000000Z"
+    assert repriced["price"]["price_plan"] == "contract-a"
+    assert repriced["price"]["service_tier"] == "priority"
+    assert repriced["price"]["region"] == "us"
+
+
 def test_help_and_version_are_real_process_entry_points() -> None:
     help_result = subprocess.run(
         [sys.executable, "-m", "samsarix_token_cost_manager", "--help"],
@@ -302,6 +374,15 @@ def test_cli_validation_and_database_errors_are_actionable(tmp_path: Path) -> No
     )
     missing_budget_shape = run_cli(database, "budget", "check")
     invalid_amount = run_cli(database, "budget", "check", "--amount", "nan")
+    amount_with_selector = run_cli(
+        database,
+        "budget",
+        "check",
+        "--amount",
+        "1",
+        "--price-plan",
+        "enterprise-2026",
+    )
     directory_as_database = run_cli(tmp_path, "init", json_output=True)
 
     assert bad_month.returncode == 2 and "YYYY-MM" in bad_month.stderr
@@ -313,6 +394,8 @@ def test_cli_validation_and_database_errors_are_actionable(tmp_path: Path) -> No
         missing_budget_shape.returncode == 2 and "provide --amount" in missing_budget_shape.stderr
     )
     assert invalid_amount.returncode == 2 and "finite" in invalid_amount.stderr
+    assert amount_with_selector.returncode == 2
+    assert "cannot be combined" in amount_with_selector.stderr
     assert directory_as_database.returncode == 2
     assert "database operation failed" in json.loads(directory_as_database.stdout)["error"]
 

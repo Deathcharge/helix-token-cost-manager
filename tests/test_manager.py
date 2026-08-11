@@ -107,6 +107,139 @@ def test_prices_are_upserted_and_listed_deterministically(manager: CostManager) 
     assert prices[0] == updated
 
 
+def test_price_books_select_tier_region_plan_and_total_input_threshold(
+    manager: CostManager,
+) -> None:
+    for minimum, maximum, input_rate, output_rate in (
+        (0, 200_000, "3", "15"),
+        (200_001, None, "6", "22.5"),
+    ):
+        manager.set_price(
+            provider="anthropic",
+            model="sonnet",
+            input_usd_per_million=input_rate,
+            output_usd_per_million=output_rate,
+            cached_input_usd_per_million="0.30",
+            cache_write_input_usd_per_million="3.75",
+            effective_from="2026-01-01",
+            input_token_min=minimum,
+            input_token_max=maximum,
+        )
+    manager.set_price(
+        provider="anthropic",
+        model="sonnet",
+        input_usd_per_million="1.5",
+        output_usd_per_million="7.5",
+        effective_from="2026-01-01",
+        service_tier="batch",
+    )
+    manager.set_price(
+        provider="anthropic",
+        model="sonnet",
+        input_usd_per_million="2.4",
+        output_usd_per_million="12",
+        effective_from="2026-01-01",
+        price_plan="enterprise-2026",
+        region="us",
+    )
+
+    standard_long = manager.estimate(
+        provider="anthropic",
+        model="sonnet",
+        input_tokens=100_000,
+        cached_input_tokens=100_001,
+        at="2026-07-01",
+    )
+    batch = manager.estimate(
+        provider="anthropic",
+        model="sonnet",
+        input_tokens=250_000,
+        at="2026-07-01",
+        service_tier="batch",
+    )
+    negotiated = manager.record(
+        provider="anthropic",
+        model="sonnet",
+        input_tokens=1_000_000,
+        occurred_at="2026-07-01",
+        price_plan="enterprise-2026",
+        region="us",
+    ).event
+
+    assert standard_long.price.input_token_min == 200_001
+    assert standard_long.input_usd == Decimal("0.600000000000")
+    assert batch.input_usd == Decimal("0.375000000000")
+    assert negotiated.cost.total_usd == Decimal("2.400000000000")
+    assert negotiated.cost.price.price_plan == "enterprise-2026"
+    assert negotiated.cost.price.region == "us"
+
+
+def test_price_book_rejects_overlap_and_missing_selector(manager: CostManager) -> None:
+    manager.set_price(
+        provider="example",
+        model="tiered",
+        input_usd_per_million="1",
+        output_usd_per_million="2",
+        effective_from="2026-01-01",
+        input_token_min=0,
+        input_token_max=100,
+    )
+    with pytest.raises(ValidationError, match="must not overlap"):
+        manager.set_price(
+            provider="example",
+            model="tiered",
+            input_usd_per_million="2",
+            output_usd_per_million="4",
+            effective_from="2026-01-01",
+            input_token_min=100,
+            input_token_max=200,
+        )
+    with pytest.raises(PriceNotFoundError, match="tier='priority'"):
+        manager.estimate(
+            provider="example",
+            model="tiered",
+            input_tokens=10,
+            service_tier="priority",
+            at="2026-07-01",
+        )
+
+
+def test_separate_connections_serialize_price_range_validation(tmp_path: Path) -> None:
+    database = tmp_path / "prices.sqlite3"
+    first = CostManager(database).open()
+    second = CostManager(database).open()
+    barrier = Barrier(2)
+
+    def set_range(cost_manager: CostManager, minimum: int, maximum: int) -> str:
+        barrier.wait()
+        try:
+            cost_manager.set_price(
+                provider="example",
+                model="tiered",
+                input_usd_per_million="1",
+                output_usd_per_million="2",
+                effective_from="2026-01-01",
+                input_token_min=minimum,
+                input_token_max=maximum,
+            )
+            return "created"
+        except ValidationError:
+            return "overlap"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = (
+                executor.submit(set_range, first, 0, 100),
+                executor.submit(set_range, second, 50, 150),
+            )
+            results = [future.result() for future in futures]
+        assert sorted(results) == ["created", "overlap"]
+        assert len(first.list_prices()) == 1
+    finally:
+        first.close()
+        second.close()
+
+
 def test_request_id_is_idempotent_and_conflicts_are_rejected(
     manager: CostManager,
 ) -> None:
@@ -515,7 +648,7 @@ def test_dimension_group_includes_unassigned_and_conflicting_retry_fails(
         )
 
 
-def test_schema_one_database_migrates_to_schema_two(tmp_path: Path) -> None:
+def test_schema_one_database_migrates_to_schema_three(tmp_path: Path) -> None:
     database = tmp_path / "v1.sqlite3"
     connection = sqlite3.connect(database)
     connection.executescript(
@@ -564,8 +697,12 @@ def test_schema_one_database_migrates_to_schema_two(tmp_path: Path) -> None:
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'event_dimensions'"
         ).fetchone()
 
-    assert version == 2
+    assert version == 3
     assert price.cache_write_input_usd_per_million == Decimal("2.5")
+    assert price.price_plan == "list"
+    assert price.service_tier == "standard"
+    assert price.region == "global"
+    assert price.input_token_min == 0 and price.input_token_max is None
     assert rows[0].cache_write_input_tokens == 0
     assert rows[0].total_usd == Decimal("0.007525000000")
     assert dimension_table is not None

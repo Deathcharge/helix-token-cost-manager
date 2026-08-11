@@ -21,6 +21,9 @@ from .adapters import UsageMeasurement
 from .exceptions import DuplicateRequestError, PriceNotFoundError, ValidationError
 from .ledger import LedgerImportResult, event_record, record_event
 from .models import (
+    DEFAULT_PRICE_PLAN,
+    DEFAULT_REGION,
+    DEFAULT_SERVICE_TIER,
     GLOBAL_SCOPE,
     MAX_RATE_USD_PER_MILLION,
     BudgetStatus,
@@ -37,11 +40,12 @@ from .models import (
     utc_now,
     validated_decimal,
     validated_dimensions,
+    validated_input_threshold,
     validated_text,
     validated_tokens,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 VALID_PERIODS = ("daily", "monthly")
 VALID_GROUPS = ("none", "provider", "model", "project", "day", "month")
 MILLION = Decimal(1_000_000)
@@ -141,13 +145,22 @@ class CostManager:
                     CREATE TABLE IF NOT EXISTS model_prices (
                         provider TEXT NOT NULL,
                         model TEXT NOT NULL,
+                        price_plan TEXT NOT NULL,
+                        service_tier TEXT NOT NULL,
+                        region TEXT NOT NULL,
+                        input_token_min INTEGER NOT NULL CHECK (input_token_min >= 0),
+                        input_token_max INTEGER NOT NULL
+                            CHECK (input_token_max = -1 OR input_token_max >= input_token_min),
                         effective_from TEXT NOT NULL,
                         input_rate TEXT NOT NULL,
                         output_rate TEXT NOT NULL,
                         cached_input_rate TEXT NOT NULL,
                         cache_write_input_rate TEXT NOT NULL,
                         created_at TEXT NOT NULL,
-                        PRIMARY KEY (provider, model, effective_from)
+                        PRIMARY KEY (
+                            provider, model, price_plan, service_tier, region,
+                            input_token_min, input_token_max, effective_from
+                        )
                     );
 
                     CREATE TABLE IF NOT EXISTS usage_events (
@@ -158,6 +171,11 @@ class CostManager:
                         provider TEXT NOT NULL,
                         model TEXT NOT NULL,
                         project TEXT,
+                        price_plan TEXT NOT NULL,
+                        service_tier TEXT NOT NULL,
+                        region TEXT NOT NULL,
+                        price_input_token_min INTEGER NOT NULL,
+                        price_input_token_max INTEGER NOT NULL,
                         input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
                         output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
                         cached_input_tokens INTEGER NOT NULL CHECK (cached_input_tokens >= 0),
@@ -222,6 +240,62 @@ class CostManager:
                     connection.execute(statement)
                 connection.execute("PRAGMA user_version = 2")
                 connection.commit()
+                version = 2
+            except Exception:
+                connection.rollback()
+                raise
+        if version == 2:
+            try:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE model_prices RENAME TO model_prices_v2;
+                    CREATE TABLE model_prices (
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        price_plan TEXT NOT NULL,
+                        service_tier TEXT NOT NULL,
+                        region TEXT NOT NULL,
+                        input_token_min INTEGER NOT NULL CHECK (input_token_min >= 0),
+                        input_token_max INTEGER NOT NULL
+                            CHECK (input_token_max = -1 OR input_token_max >= input_token_min),
+                        effective_from TEXT NOT NULL,
+                        input_rate TEXT NOT NULL,
+                        output_rate TEXT NOT NULL,
+                        cached_input_rate TEXT NOT NULL,
+                        cache_write_input_rate TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (
+                            provider, model, price_plan, service_tier, region,
+                            input_token_min, input_token_max, effective_from
+                        )
+                    );
+                    INSERT INTO model_prices (
+                        provider, model, price_plan, service_tier, region,
+                        input_token_min, input_token_max, effective_from,
+                        input_rate, output_rate, cached_input_rate,
+                        cache_write_input_rate, created_at
+                    )
+                    SELECT provider, model, 'list', 'standard', 'global', 0, -1,
+                           effective_from, input_rate, output_rate, cached_input_rate,
+                           cache_write_input_rate, created_at
+                    FROM model_prices_v2;
+                    DROP TABLE model_prices_v2;
+
+                    ALTER TABLE usage_events
+                        ADD COLUMN price_plan TEXT NOT NULL DEFAULT 'list';
+                    ALTER TABLE usage_events
+                        ADD COLUMN service_tier TEXT NOT NULL DEFAULT 'standard';
+                    ALTER TABLE usage_events
+                        ADD COLUMN region TEXT NOT NULL DEFAULT 'global';
+                    ALTER TABLE usage_events
+                        ADD COLUMN price_input_token_min INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE usage_events
+                        ADD COLUMN price_input_token_max INTEGER NOT NULL DEFAULT -1;
+                    PRAGMA user_version = 3;
+                    COMMIT;
+                    """
+                )
             except Exception:
                 connection.rollback()
                 raise
@@ -236,11 +310,29 @@ class CostManager:
         cached_input_usd_per_million: Optional[DecimalInput] = None,
         cache_write_input_usd_per_million: Optional[DecimalInput] = None,
         effective_from: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
+        input_token_min: int = 0,
+        input_token_max: Optional[int] = None,
     ) -> ModelPrice:
-        """Upsert one exact provider/model price version."""
+        """Upsert one exact provider/model price-book rule."""
 
         normalized_provider = validated_text(provider, field="provider")
         normalized_model = validated_text(model, field="model")
+        normalized_plan = validated_text(price_plan, field="price_plan")
+        normalized_tier = validated_text(service_tier, field="service_tier")
+        normalized_region = validated_text(region, field="region")
+        normalized_minimum = validated_input_threshold(input_token_min, field="input_token_min")
+        normalized_maximum = (
+            validated_input_threshold(input_token_max, field="input_token_max")
+            if input_token_max is not None
+            else None
+        )
+        if normalized_maximum is not None and normalized_maximum < normalized_minimum:
+            raise ValidationError(
+                "input_token_max must be greater than or equal to input_token_min"
+            )
         input_rate = validated_decimal(
             input_usd_per_million,
             field="input_usd_per_million",
@@ -272,15 +364,60 @@ class CostManager:
             cached_input_usd_per_million=cached_rate,
             cache_write_input_usd_per_million=cache_write_rate,
             effective_from=effective,
+            price_plan=normalized_plan,
+            service_tier=normalized_tier,
+            region=normalized_region,
+            input_token_min=normalized_minimum,
+            input_token_max=normalized_maximum,
         )
         with self._lock, self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            sibling_rows = self.connection.execute(
+                """
+                SELECT input_token_min, input_token_max
+                FROM model_prices
+                WHERE provider = ? AND model = ? AND price_plan = ?
+                  AND service_tier = ? AND region = ? AND effective_from = ?
+                """,
+                (
+                    price.provider,
+                    price.model,
+                    price.price_plan,
+                    price.service_tier,
+                    price.region,
+                    format_timestamp(price.effective_from),
+                ),
+            ).fetchall()
+            new_upper = price.input_token_max
+            for sibling in sibling_rows:
+                existing_minimum = int(sibling["input_token_min"])
+                existing_maximum_value = int(sibling["input_token_max"])
+                existing_maximum = None if existing_maximum_value == -1 else existing_maximum_value
+                if (existing_minimum, existing_maximum) == (
+                    price.input_token_min,
+                    price.input_token_max,
+                ):
+                    continue
+                disjoint = (
+                    existing_maximum is not None and existing_maximum < price.input_token_min
+                ) or (new_upper is not None and new_upper < existing_minimum)
+                if not disjoint:
+                    raise ValidationError(
+                        "input token ranges must not overlap for the same price selector "
+                        "and effective timestamp"
+                    )
             self.connection.execute(
                 """
                 INSERT INTO model_prices (
-                    provider, model, effective_from, input_rate, output_rate,
-                    cached_input_rate, cache_write_input_rate, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(provider, model, effective_from) DO UPDATE SET
+                    provider, model, price_plan, service_tier, region,
+                    input_token_min, input_token_max, effective_from,
+                    input_rate, output_rate, cached_input_rate,
+                    cache_write_input_rate, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    provider, model, price_plan, service_tier, region,
+                    input_token_min, input_token_max, effective_from
+                ) DO UPDATE SET
                     input_rate = excluded.input_rate,
                     output_rate = excluded.output_rate,
                     cached_input_rate = excluded.cached_input_rate,
@@ -290,6 +427,11 @@ class CostManager:
                 (
                     price.provider,
                     price.model,
+                    price.price_plan,
+                    price.service_tier,
+                    price.region,
+                    price.input_token_min,
+                    -1 if price.input_token_max is None else price.input_token_max,
                     format_timestamp(price.effective_from),
                     decimal_text(price.input_usd_per_million),
                     decimal_text(price.output_usd_per_million),
@@ -307,9 +449,11 @@ class CostManager:
             rows = self.connection.execute(
                 """
                 SELECT provider, model, effective_from, input_rate, output_rate,
-                       cached_input_rate, cache_write_input_rate
+                       cached_input_rate, cache_write_input_rate, price_plan,
+                       service_tier, region, input_token_min, input_token_max
                 FROM model_prices
-                ORDER BY provider, model, effective_from
+                ORDER BY provider, model, price_plan, service_tier, region,
+                         input_token_min, effective_from
                 """
             ).fetchall()
         return [self._price_from_row(row) for row in rows]
@@ -320,28 +464,51 @@ class CostManager:
         provider: str,
         model: str,
         at: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
+        input_tokens: int = 0,
     ) -> ModelPrice:
-        """Resolve the newest exact price effective at the requested time."""
+        """Resolve the newest exact rule for a price-book selector and input size."""
 
         normalized_provider = validated_text(provider, field="provider")
         normalized_model = validated_text(model, field="model")
+        normalized_plan = validated_text(price_plan, field="price_plan")
+        normalized_tier = validated_text(service_tier, field="service_tier")
+        normalized_region = validated_text(region, field="region")
+        normalized_input_tokens = validated_input_threshold(input_tokens, field="input_tokens")
         timestamp = parse_timestamp(at, field="at")
         with self._lock:
             row = self.connection.execute(
                 """
                 SELECT provider, model, effective_from, input_rate, output_rate,
-                       cached_input_rate, cache_write_input_rate
+                       cached_input_rate, cache_write_input_rate, price_plan,
+                       service_tier, region, input_token_min, input_token_max
                 FROM model_prices
-                WHERE provider = ? AND model = ? AND effective_from <= ?
-                ORDER BY effective_from DESC
+                WHERE provider = ? AND model = ? AND price_plan = ?
+                  AND service_tier = ? AND region = ? AND effective_from <= ?
+                  AND input_token_min <= ?
+                  AND (input_token_max = -1 OR input_token_max >= ?)
+                ORDER BY effective_from DESC, input_token_min DESC
                 LIMIT 1
                 """,
-                (normalized_provider, normalized_model, format_timestamp(timestamp)),
+                (
+                    normalized_provider,
+                    normalized_model,
+                    normalized_plan,
+                    normalized_tier,
+                    normalized_region,
+                    format_timestamp(timestamp),
+                    normalized_input_tokens,
+                    normalized_input_tokens,
+                ),
             ).fetchone()
         if row is None:
             raise PriceNotFoundError(
                 "no price found for "
-                f"{normalized_provider}/{normalized_model} at {format_timestamp(timestamp)}; "
+                f"{normalized_provider}/{normalized_model} plan={normalized_plan!r} "
+                f"tier={normalized_tier!r} region={normalized_region!r} "
+                f"input_tokens={normalized_input_tokens} at {format_timestamp(timestamp)}; "
                 "add one with `samsarix-cost price set`"
             )
         return self._price_from_row(row)
@@ -356,6 +523,13 @@ class CostManager:
             cached_input_usd_per_million=Decimal(row["cached_input_rate"]),
             cache_write_input_usd_per_million=Decimal(row["cache_write_input_rate"]),
             effective_from=parse_timestamp(row["effective_from"], field="effective_from"),
+            price_plan=row["price_plan"],
+            service_tier=row["service_tier"],
+            region=row["region"],
+            input_token_min=int(row["input_token_min"]),
+            input_token_max=(
+                None if int(row["input_token_max"]) == -1 else int(row["input_token_max"])
+            ),
         )
 
     def estimate(
@@ -368,6 +542,9 @@ class CostManager:
         cached_input_tokens: int = 0,
         cache_write_input_tokens: int = 0,
         at: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
     ) -> CostBreakdown:
         """Calculate exact USD cost without recording an event."""
 
@@ -377,7 +554,16 @@ class CostManager:
         normalized_cache_write = validated_tokens(
             cache_write_input_tokens, field="cache_write_input_tokens"
         )
-        price = self.get_price(provider=provider, model=model, at=at)
+        rated_input_tokens = normalized_input + normalized_cached + normalized_cache_write
+        price = self.get_price(
+            provider=provider,
+            model=model,
+            at=at,
+            price_plan=price_plan,
+            service_tier=service_tier,
+            region=region,
+            input_tokens=rated_input_tokens,
+        )
         input_cost = money(Decimal(normalized_input) * price.input_usd_per_million / MILLION)
         output_cost = money(Decimal(normalized_output) * price.output_usd_per_million / MILLION)
         cached_cost = money(
@@ -408,6 +594,9 @@ class CostManager:
         project: Optional[str] = None,
         dimensions: Optional[Mapping[str, str]] = None,
         occurred_at: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
     ) -> RecordResult:
         """Cost and atomically record one immutable usage event.
 
@@ -417,6 +606,9 @@ class CostManager:
 
         normalized_provider = validated_text(provider, field="provider")
         normalized_model = validated_text(model, field="model")
+        normalized_plan = validated_text(price_plan, field="price_plan")
+        normalized_tier = validated_text(service_tier, field="service_tier")
+        normalized_region = validated_text(region, field="region")
         normalized_request = (
             validated_text(request_id, field="request_id") if request_id is not None else None
         )
@@ -449,6 +641,9 @@ class CostManager:
                         cached_input_tokens=normalized_cached,
                         cache_write_input_tokens=normalized_cache_write,
                         dimensions=normalized_dimensions,
+                        price_plan=normalized_plan,
+                        service_tier=normalized_tier,
+                        region=normalized_region,
                         occurred_at=occurred if explicit_occurred else None,
                     )
                     return RecordResult(existing, created=False)
@@ -461,6 +656,9 @@ class CostManager:
                 cached_input_tokens=normalized_cached,
                 cache_write_input_tokens=normalized_cache_write,
                 at=occurred,
+                price_plan=normalized_plan,
+                service_tier=normalized_tier,
+                region=normalized_region,
             )
             recorded = utc_now()
             event_id = f"evt_{uuid.uuid4().hex}"
@@ -472,6 +670,11 @@ class CostManager:
                 normalized_provider,
                 normalized_model,
                 normalized_project,
+                cost.price.price_plan,
+                cost.price.service_tier,
+                cost.price.region,
+                cost.price.input_token_min,
+                -1 if cost.price.input_token_max is None else cost.price.input_token_max,
                 normalized_input,
                 normalized_output,
                 normalized_cached,
@@ -493,12 +696,17 @@ class CostManager:
                         """
                         INSERT INTO usage_events (
                             event_id, request_id, occurred_at, recorded_at, provider,
-                            model, project, input_tokens, output_tokens,
+                            model, project, price_plan, service_tier, region,
+                            price_input_token_min, price_input_token_max,
+                            input_tokens, output_tokens,
                             cached_input_tokens, cache_write_input_tokens, input_rate,
                             output_rate, cached_input_rate, cache_write_input_rate,
                             price_effective_from, input_cost, output_cost,
                             cached_input_cost, cache_write_input_cost, total_cost
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        )
                         """,
                         values,
                     )
@@ -526,6 +734,9 @@ class CostManager:
                     cached_input_tokens=normalized_cached,
                     cache_write_input_tokens=normalized_cache_write,
                     dimensions=normalized_dimensions,
+                    price_plan=normalized_plan,
+                    service_tier=normalized_tier,
+                    region=normalized_region,
                     occurred_at=occurred if explicit_occurred else None,
                 )
                 return RecordResult(existing, created=False)
@@ -553,6 +764,9 @@ class CostManager:
         project: Optional[str] = None,
         dimensions: Optional[Mapping[str, str]] = None,
         occurred_at: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
     ) -> RecordResult:
         """Record normalized provider or telemetry usage with allocation metadata."""
 
@@ -570,6 +784,9 @@ class CostManager:
             project=project,
             dimensions=merged_dimensions,
             occurred_at=occurred_at,
+            price_plan=price_plan,
+            service_tier=service_tier,
+            region=region,
         )
 
     def _find_by_request_id(self, request_id: str) -> Optional[UsageEvent]:
@@ -590,6 +807,9 @@ class CostManager:
         cached_input_tokens: int,
         cache_write_input_tokens: int,
         dimensions: Tuple[Tuple[str, str], ...],
+        price_plan: str,
+        service_tier: str,
+        region: str,
         occurred_at: Optional[datetime],
     ) -> None:
         same = (
@@ -601,6 +821,9 @@ class CostManager:
             and event.cached_input_tokens == cached_input_tokens
             and event.cache_write_input_tokens == cache_write_input_tokens
             and event.dimensions == dimensions
+            and event.cost.price.price_plan == price_plan
+            and event.cost.price.service_tier == service_tier
+            and event.cost.price.region == region
             and (occurred_at is None or event.occurred_at == occurred_at)
         )
         if not same:
@@ -618,6 +841,15 @@ class CostManager:
             cache_write_input_usd_per_million=Decimal(row["cache_write_input_rate"]),
             effective_from=parse_timestamp(
                 row["price_effective_from"], field="price_effective_from"
+            ),
+            price_plan=row["price_plan"],
+            service_tier=row["service_tier"],
+            region=row["region"],
+            input_token_min=int(row["price_input_token_min"]),
+            input_token_max=(
+                None
+                if int(row["price_input_token_max"]) == -1
+                else int(row["price_input_token_max"])
             ),
         )
         cost = CostBreakdown(
@@ -757,12 +989,16 @@ class CostManager:
             """
             INSERT INTO usage_events (
                 event_id, request_id, occurred_at, recorded_at, provider,
-                model, project, input_tokens, output_tokens,
+                model, project, price_plan, service_tier, region,
+                price_input_token_min, price_input_token_max,
+                input_tokens, output_tokens,
                 cached_input_tokens, cache_write_input_tokens, input_rate,
                 output_rate, cached_input_rate, cache_write_input_rate,
                 price_effective_from, input_cost, output_cost,
                 cached_input_cost, cache_write_input_cost, total_cost
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """,
             (
                 event.event_id,
@@ -772,6 +1008,11 @@ class CostManager:
                 event.provider,
                 event.model,
                 event.project,
+                price.price_plan,
+                price.service_tier,
+                price.region,
+                price.input_token_min,
+                -1 if price.input_token_max is None else price.input_token_max,
                 event.input_tokens,
                 event.output_tokens,
                 event.cached_input_tokens,

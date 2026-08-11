@@ -17,6 +17,9 @@ from typing import BinaryIO, Dict, Iterable, List, Protocol, Sequence
 
 from .exceptions import ValidationError
 from .models import (
+    DEFAULT_PRICE_PLAN,
+    DEFAULT_REGION,
+    DEFAULT_SERVICE_TIER,
     GLOBAL_SCOPE,
     MAX_RATE_USD_PER_MILLION,
     CostBreakdown,
@@ -28,16 +31,17 @@ from .models import (
     parse_timestamp,
     validated_decimal,
     validated_dimensions,
+    validated_input_threshold,
     validated_text,
     validated_tokens,
 )
 
 LEDGER_FORMAT = "samsarix-usage-ledger"
-LEDGER_VERSION = 1
+LEDGER_VERSION = 2
 MAX_LEDGER_BYTES = 100 * 1024 * 1024
 MAX_LEDGER_RECORDS = 1_000_000
 
-CSV_FIELDS = (
+CSV_FIELDS_V1 = (
     "event_id",
     "request_id",
     "occurred_at",
@@ -60,6 +64,16 @@ CSV_FIELDS = (
     "cached_input_cost",
     "cache_write_input_cost",
     "total_cost",
+)
+
+CSV_FIELDS = (
+    *CSV_FIELDS_V1[:7],
+    "price_plan",
+    "service_tier",
+    "region",
+    "price_input_token_min",
+    "price_input_token_max",
+    *CSV_FIELDS_V1[7:],
 )
 
 
@@ -229,6 +243,11 @@ def event_record(event: UsageEvent) -> Dict[str, object]:
         "provider": event.provider,
         "model": event.model,
         "project": event.project,
+        "price_plan": price.price_plan,
+        "service_tier": price.service_tier,
+        "region": price.region,
+        "price_input_token_min": price.input_token_min,
+        "price_input_token_max": price.input_token_max,
         "input_tokens": event.input_tokens,
         "output_tokens": event.output_tokens,
         "cached_input_tokens": event.cached_input_tokens,
@@ -415,6 +434,31 @@ def record_event(record: Mapping[str, object]) -> UsageEvent:
             "cache_write_input_tokens",
         )
     }
+    price_plan = validated_text(record.get("price_plan", DEFAULT_PRICE_PLAN), field="price_plan")
+    service_tier = validated_text(
+        record.get("service_tier", DEFAULT_SERVICE_TIER), field="service_tier"
+    )
+    region = validated_text(record.get("region", DEFAULT_REGION), field="region")
+    price_input_token_min = validated_input_threshold(
+        record.get("price_input_token_min", 0), field="price_input_token_min"
+    )
+    maximum_value = record.get("price_input_token_max")
+    price_input_token_max = (
+        None
+        if maximum_value in (None, "")
+        else validated_input_threshold(maximum_value, field="price_input_token_max")
+    )
+    if price_input_token_max is not None and price_input_token_max < price_input_token_min:
+        raise ValidationError(
+            "price_input_token_max must be greater than or equal to price_input_token_min"
+        )
+    rated_input_tokens = (
+        tokens["input_tokens"] + tokens["cached_input_tokens"] + tokens["cache_write_input_tokens"]
+    )
+    if rated_input_tokens < price_input_token_min or (
+        price_input_token_max is not None and rated_input_tokens > price_input_token_max
+    ):
+        raise ValidationError("snapshotted price input-token range does not cover usage")
     rates = {
         name: validated_decimal(
             _required(record, name), field=name, maximum=MAX_RATE_USD_PER_MILLION
@@ -465,6 +509,11 @@ def record_event(record: Mapping[str, object]) -> UsageEvent:
             _required(record, "price_effective_from"),
             field="price_effective_from",
         ),
+        price_plan=price_plan,
+        service_tier=service_tier,
+        region=region,
+        input_token_min=price_input_token_min,
+        input_token_max=price_input_token_max,
     )
     return UsageEvent(
         event_id=validated_text(_required(record, "event_id"), field="event_id"),
@@ -507,13 +556,13 @@ def import_jsonl(content: bytes, *, expected_sha256: str | None = None) -> List[
         manifest = json.loads(lines[0])
     except json.JSONDecodeError as exc:
         raise ValidationError("ledger manifest must be valid JSON") from exc
-    expected_manifest = {
-        "format": LEDGER_FORMAT,
-        "format_version": LEDGER_VERSION,
-        "type": "manifest",
-    }
-    if manifest != expected_manifest:
+    supported_manifests = (
+        {"format": LEDGER_FORMAT, "format_version": 1, "type": "manifest"},
+        {"format": LEDGER_FORMAT, "format_version": LEDGER_VERSION, "type": "manifest"},
+    )
+    if manifest not in supported_manifests:
         raise ValidationError("unsupported ledger manifest or format version")
+    legacy = manifest["format_version"] == 1
     if len(lines) - 1 > MAX_LEDGER_RECORDS:
         raise ValidationError(f"ledger must not exceed {MAX_LEDGER_RECORDS} records")
     events: List[UsageEvent] = []
@@ -528,6 +577,15 @@ def import_jsonl(content: bytes, *, expected_sha256: str | None = None) -> List[
         if not isinstance(record, dict):
             raise ValidationError(f"ledger line {line_number} record must be an object")
         try:
+            if not legacy:
+                for field in (
+                    "price_plan",
+                    "service_tier",
+                    "region",
+                    "price_input_token_min",
+                    "price_input_token_max",
+                ):
+                    _required(record, field)
             events.append(record_event(record))
         except ValidationError as exc:
             raise ValidationError(f"ledger line {line_number}: {exc}") from exc
@@ -547,8 +605,10 @@ def import_csv(content: bytes, *, expected_sha256: str | None = None) -> List[Us
     except UnicodeDecodeError as exc:
         raise ValidationError("ledger must be UTF-8") from exc
     reader = csv.DictReader(io.StringIO(text, newline=""))
-    if tuple(reader.fieldnames or ()) != CSV_FIELDS:
-        raise ValidationError("CSV ledger header does not match format version 1")
+    fieldnames = tuple(reader.fieldnames or ())
+    if fieldnames not in (CSV_FIELDS_V1, CSV_FIELDS):
+        raise ValidationError("CSV ledger header does not match format version 1 or 2")
+    legacy = fieldnames == CSV_FIELDS_V1
     events: List[UsageEvent] = []
     for row_number, row in enumerate(reader, start=2):
         if len(events) >= MAX_LEDGER_RECORDS:
@@ -563,6 +623,16 @@ def import_csv(content: bytes, *, expected_sha256: str | None = None) -> List[Us
             ) from exc
         record: Dict[str, object] = dict(row)
         record["dimensions"] = dimensions
+        if legacy:
+            record.update(
+                {
+                    "price_plan": DEFAULT_PRICE_PLAN,
+                    "service_tier": DEFAULT_SERVICE_TIER,
+                    "region": DEFAULT_REGION,
+                    "price_input_token_min": 0,
+                    "price_input_token_max": None,
+                }
+            )
         for field in (
             "input_tokens",
             "output_tokens",
@@ -573,6 +643,15 @@ def import_csv(content: bytes, *, expected_sha256: str | None = None) -> List[Us
             if not isinstance(value, str) or not value.isascii() or not value.isdigit():
                 raise ValidationError(f"CSV ledger row {row_number} {field} must be an integer")
             record[field] = int(value)
+        if not legacy:
+            for field in ("price_input_token_min", "price_input_token_max"):
+                value = record[field]
+                if field == "price_input_token_max" and value == "":
+                    record[field] = None
+                elif not isinstance(value, str) or not value.isascii() or not value.isdigit():
+                    raise ValidationError(f"CSV ledger row {row_number} {field} must be an integer")
+                else:
+                    record[field] = int(value)
         try:
             events.append(record_event(record))
         except ValidationError as exc:

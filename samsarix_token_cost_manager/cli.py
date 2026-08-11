@@ -34,6 +34,9 @@ from .ledger import (
 )
 from .manager import SCHEMA_VERSION, VALID_GROUPS, VALID_PERIODS, CostManager, default_database_path
 from .models import (
+    DEFAULT_PRICE_PLAN,
+    DEFAULT_REGION,
+    DEFAULT_SERVICE_TIER,
     BudgetStatus,
     RecordResult,
     SummaryRow,
@@ -103,6 +106,7 @@ def _parser() -> argparse.ArgumentParser:
         "--effective-from",
         help="ISO-8601 date/timestamp (defaults to now)",
     )
+    _add_price_selector_arguments(price_set, include_thresholds=True)
     price_commands.add_parser("list", help="list configured price versions")
 
     estimate = subparsers.add_parser("estimate", help="calculate cost without recording usage")
@@ -119,6 +123,7 @@ def _parser() -> argparse.ArgumentParser:
     ingest.add_argument("--project", help="optional cost allocation project")
     ingest.add_argument("--dimension", action="append", default=[], metavar="KEY=VALUE")
     ingest.add_argument("--occurred-at", help="ISO-8601 timestamp (defaults to now)")
+    _add_price_selector_arguments(ingest, include_thresholds=False)
 
     report = subparsers.add_parser("report", help="summarize recorded usage and cost")
     report.add_argument("--since", help="inclusive ISO-8601 date/timestamp")
@@ -188,7 +193,28 @@ def _parser() -> argparse.ArgumentParser:
     budget_check.add_argument("--cache-write-input-tokens", type=int, default=0)
     budget_check.add_argument("--project", help="apply project and global budgets")
     budget_check.add_argument("--at", help="ISO-8601 timestamp (defaults to now)")
+    _add_price_selector_arguments(budget_check, include_thresholds=False)
     return parser
+
+
+def _add_price_selector_arguments(
+    parser: argparse.ArgumentParser, *, include_thresholds: bool
+) -> None:
+    parser.add_argument("--price-plan", default="list", help="price book or contract name")
+    parser.add_argument("--service-tier", default="standard", help="processing/service tier")
+    parser.add_argument("--region", default="global", help="billing or inference geography")
+    if include_thresholds:
+        parser.add_argument(
+            "--input-token-min",
+            type=int,
+            default=0,
+            help="inclusive total input-token threshold for this rule",
+        )
+        parser.add_argument(
+            "--input-token-max",
+            type=int,
+            help="inclusive upper threshold; omit for no upper bound",
+        )
 
 
 def _add_usage_arguments(parser: argparse.ArgumentParser, *, include_identity: bool) -> None:
@@ -198,6 +224,7 @@ def _add_usage_arguments(parser: argparse.ArgumentParser, *, include_identity: b
     parser.add_argument("--output-tokens", type=int, default=0)
     parser.add_argument("--cached-input-tokens", type=int, default=0)
     parser.add_argument("--cache-write-input-tokens", type=int, default=0)
+    _add_price_selector_arguments(parser, include_thresholds=False)
     if include_identity:
         parser.add_argument(
             "--request-id",
@@ -380,6 +407,10 @@ def _render_prices(prices: Sequence[Any]) -> None:
     headers = (
         "PROVIDER",
         "MODEL",
+        "PLAN",
+        "TIER",
+        "REGION",
+        "INPUT RANGE",
         "INPUT/1M",
         "OUTPUT/1M",
         "CACHE READ/1M",
@@ -390,6 +421,14 @@ def _render_prices(prices: Sequence[Any]) -> None:
         (
             price.provider,
             price.model,
+            price.price_plan,
+            price.service_tier,
+            price.region,
+            (
+                f"{price.input_token_min}.."
+                if price.input_token_max is None
+                else f"{price.input_token_min}..{price.input_token_max}"
+            ),
             _format_usd(price.input_usd_per_million),
             _format_usd(price.output_usd_per_million),
             _format_usd(price.cached_input_usd_per_million),
@@ -517,6 +556,11 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 cached_input_usd_per_million=arguments.cached_input_rate,
                 cache_write_input_usd_per_million=arguments.cache_write_input_rate,
                 effective_from=arguments.effective_from,
+                price_plan=arguments.price_plan,
+                service_tier=arguments.service_tier,
+                region=arguments.region,
+                input_token_min=arguments.input_token_min,
+                input_token_max=arguments.input_token_max,
             )
             if arguments.json:
                 _emit_json(price.to_dict())
@@ -544,6 +588,9 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 cached_input_tokens=arguments.cached_input_tokens,
                 cache_write_input_tokens=arguments.cache_write_input_tokens,
                 at=arguments.at,
+                price_plan=arguments.price_plan,
+                service_tier=arguments.service_tier,
+                region=arguments.region,
             )
             if arguments.json:
                 _emit_json(estimate_result.to_dict())
@@ -563,6 +610,9 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 project=arguments.project,
                 dimensions=_parse_dimensions(arguments.dimension),
                 occurred_at=arguments.occurred_at,
+                price_plan=arguments.price_plan,
+                service_tier=arguments.service_tier,
+                region=arguments.region,
             )
             _render_record_result(manager, record_result, emit_json=arguments.json)
             return 0
@@ -580,6 +630,9 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 project=arguments.project,
                 dimensions=_parse_dimensions(arguments.dimension),
                 occurred_at=arguments.occurred_at,
+                price_plan=arguments.price_plan,
+                service_tier=arguments.service_tier,
+                region=arguments.region,
             )
             _render_record_result(
                 manager,
@@ -729,6 +782,15 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                     raise ValidationError(
                         "amount cannot be combined with provider/model token estimation"
                     )
+                if (
+                    arguments.price_plan != DEFAULT_PRICE_PLAN
+                    or arguments.service_tier != DEFAULT_SERVICE_TIER
+                    or arguments.region != DEFAULT_REGION
+                ):
+                    raise ValidationError(
+                        "amount cannot be combined with price-plan, service-tier, or region "
+                        "selectors"
+                    )
                 estimate = validated_decimal(arguments.amount, field="amount")
             else:
                 if not arguments.provider or not arguments.model:
@@ -741,6 +803,9 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                     cached_input_tokens=arguments.cached_input_tokens,
                     cache_write_input_tokens=arguments.cache_write_input_tokens,
                     at=arguments.at,
+                    price_plan=arguments.price_plan,
+                    service_tier=arguments.service_tier,
+                    region=arguments.region,
                 ).total_usd
             statuses = manager.check_budgets(
                 estimated_usd=estimate,
