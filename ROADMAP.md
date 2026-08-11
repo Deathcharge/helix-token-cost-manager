@@ -30,6 +30,7 @@ Current hardening backlog:
 - Total-level token reconciliation is present; provider invoice-file adapters, mixed-event portable ledgers, forecasting, and anomaly detection are not.
 - Public API/database schema creates ongoing compatibility and migration duties.
 - Owner must approve package namespace, Apache licensing authority, tag, and trusted publishing.
+- Configure a protected release workflow and default-branch ruleset before the first public package publication; see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Competitive milestones
 

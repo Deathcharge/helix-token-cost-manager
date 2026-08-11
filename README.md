@@ -308,7 +308,7 @@ These are deliberate release boundaries. Planned work is prioritized in [docs/PR
 
 ## Distribution and project status
 
-The simplest release path is a source distribution and pure-Python wheel published to PyPI after owner approval. The name `samsarix-token-cost-manager` returned no PyPI project on July 28, 2026, but availability is not reserved until publication. No package has been published by this work.
+The simplest release path is a source distribution and pure-Python wheel published to PyPI after owner approval. The name `samsarix-token-cost-manager` returned no PyPI project on August 11, 2026, but availability is not reserved until publication. No package has been published by this work. Follow the owner-controlled [release checklist](docs/RELEASING.md) before creating the first tag.
 
 Contributions are welcome through GitHub issues and pull requests; see [CONTRIBUTING.md](CONTRIBUTING.md). The productization decisions and exact baseline are recorded in [docs/PRODUCTIZATION.md](docs/PRODUCTIZATION.md).
 
