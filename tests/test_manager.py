@@ -83,6 +83,156 @@ def test_missing_price_fails_closed(manager: CostManager) -> None:
         manager.estimate(provider="unknown", model="model", input_tokens=1)
 
 
+def test_billable_unit_prices_are_effective_dated_and_fail_closed(
+    manager: CostManager,
+) -> None:
+    january = manager.set_billable_unit_price(
+        provider="google",
+        sku="grounding-query",
+        unit="request",
+        rate_usd="35",
+        pricing_quantity="1000",
+        effective_from="2026-01-01",
+        price_plan="contract-a",
+        service_tier="priority",
+        region="us",
+    )
+    june = manager.set_billable_unit_price(
+        provider="google",
+        sku="grounding-query",
+        unit="request",
+        rate_usd="30",
+        pricing_quantity="1000",
+        effective_from="2026-06-01",
+        price_plan="contract-a",
+        service_tier="priority",
+        region="us",
+    )
+    manager.set_billable_unit_price(
+        provider="openai",
+        sku="web-search",
+        unit="call",
+        rate_usd="10",
+        pricing_quantity="1000",
+        effective_from="2026-01-01",
+    )
+
+    may = manager.estimate_charge(
+        provider="google",
+        sku="grounding-query",
+        quantity="1200",
+        at="2026-05-31T23:59:59Z",
+        price_plan="contract-a",
+        service_tier="priority",
+        region="us",
+    )
+    repriced = manager.estimate_charge(
+        provider="google",
+        sku="grounding-query",
+        quantity="1200",
+        at="2026-06-01T00:00:00Z",
+        price_plan="contract-a",
+        service_tier="priority",
+        region="us",
+    )
+
+    assert may.total_usd == Decimal("42.000000000000") and may.price == january
+    assert repriced.total_usd == Decimal("36.000000000000") and repriced.price == june
+    assert [(price.provider, price.sku) for price in manager.list_billable_unit_prices()] == [
+        ("google", "grounding-query"),
+        ("google", "grounding-query"),
+        ("openai", "web-search"),
+    ]
+    with pytest.raises(PriceNotFoundError, match="unit-price set"):
+        manager.estimate_charge(
+            provider="google",
+            sku="grounding-query",
+            quantity="1",
+            at="2026-07-01",
+        )
+    with pytest.raises(ValidationError, match="positive"):
+        manager.estimate_charge(provider="openai", sku="web-search", quantity="0", at="2026-07-01")
+
+
+def test_charge_recording_idempotency_reporting_and_budget_spend(manager: CostManager) -> None:
+    manager.set_billable_unit_price(
+        provider="google",
+        sku="grounding-query",
+        unit="request",
+        rate_usd="35",
+        pricing_quantity="1000",
+        effective_from="2026-01-01",
+    )
+    manager.set_billable_unit_price(
+        provider="google",
+        sku="cache-storage",
+        unit="token-hour",
+        rate_usd="1",
+        pricing_quantity="1000",
+        effective_from="2026-01-01",
+    )
+    first = manager.record_charge(
+        provider="google",
+        sku="grounding-query",
+        quantity="100",
+        request_id="req-charge",
+        project="assistant",
+        dimensions={"team": "product"},
+        occurred_at="2026-07-01",
+    )
+    repeated = manager.record_charge(
+        provider="google",
+        sku="grounding-query",
+        quantity="100",
+        request_id="req-charge",
+        project="assistant",
+        dimensions={"team": "product"},
+    )
+    second_sku = manager.record_charge(
+        provider="google",
+        sku="cache-storage",
+        quantity="1000",
+        request_id="req-charge",
+        project="assistant",
+        dimensions={"team": "platform"},
+        occurred_at="2026-07-02",
+    )
+
+    assert first.created is True and repeated.created is False
+    assert repeated.event == first.event
+    assert second_sku.created is True
+    assert first.event.cost.total_usd == Decimal("3.500000000000")
+    assert [event.event_id for event in manager.list_charges(project="assistant")] == [
+        first.event.event_id,
+        second_sku.event.event_id,
+    ]
+    assert manager.summarize_charges(group_by="sku")[0].to_dict() == {
+        "group": "google/grounding-query",
+        "charges": 1,
+        "total_usd": "3.500000000000",
+    }
+    dimension_rows = manager.summarize_charges(
+        group_by="dimension:team", dimensions={"team": "product"}
+    )
+    assert [(row.group, row.charges) for row in dimension_rows] == [("product", 1)]
+
+    manager.set_budget(limit_usd="4", period="monthly", project="assistant")
+    status = manager.check_budgets(project="assistant", at="2026-07-15")[0]
+    assert status.spent_usd == Decimal("4.500000000000")
+    assert status.allowed is False
+
+    with pytest.raises(DuplicateRequestError, match="different charge data"):
+        manager.record_charge(
+            provider="google",
+            sku="grounding-query",
+            quantity="101",
+            request_id="req-charge",
+            project="assistant",
+        )
+    with pytest.raises(ValidationError, match="group_by"):
+        manager.summarize_charges(group_by="unit")
+
+
 def test_prices_are_upserted_and_listed_deterministically(manager: CostManager) -> None:
     manager.set_price(
         provider="zeta",
@@ -648,7 +798,7 @@ def test_dimension_group_includes_unassigned_and_conflicting_retry_fails(
         )
 
 
-def test_schema_one_database_migrates_to_schema_three(tmp_path: Path) -> None:
+def test_schema_one_database_migrates_to_schema_four(tmp_path: Path) -> None:
     database = tmp_path / "v1.sqlite3"
     connection = sqlite3.connect(database)
     connection.executescript(
@@ -693,11 +843,14 @@ def test_schema_one_database_migrates_to_schema_three(tmp_path: Path) -> None:
         version = migrated.connection.execute("PRAGMA user_version").fetchone()[0]
         price = migrated.get_price(provider="example", model="model-v1", at="2026-08-01")
         rows = migrated.summarize()
-        dimension_table = migrated.connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'event_dimensions'"
-        ).fetchone()
+        tables = {
+            row[0]
+            for row in migrated.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
 
-    assert version == 3
+    assert version == 4
     assert price.cache_write_input_usd_per_million == Decimal("2.5")
     assert price.price_plan == "list"
     assert price.service_tier == "standard"
@@ -705,7 +858,7 @@ def test_schema_one_database_migrates_to_schema_three(tmp_path: Path) -> None:
     assert price.input_token_min == 0 and price.input_token_max is None
     assert rows[0].cache_write_input_tokens == 0
     assert rows[0].total_usd == Decimal("0.007525000000")
-    assert dimension_table is not None
+    assert {"event_dimensions", "billable_unit_prices", "charge_events"} <= tables
 
 
 def test_dimension_validation_is_bounded_and_normalized(manager: CostManager) -> None:

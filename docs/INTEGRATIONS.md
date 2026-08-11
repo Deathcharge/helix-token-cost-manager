@@ -145,7 +145,7 @@ OTel automatically supplies agent, agent version, workflow, conversation, and se
 
 ### Multi-tenant SaaS chargeback
 
-Use a stable pseudonymous tenant key as a dimension and a product area as `project`. Exact event snapshots make later price changes non-retroactive. Provider invoices remain the financial system of record until a future reconciliation feature is implemented.
+Use a stable pseudonymous tenant key as a dimension and a product area as `project`. Exact event snapshots make later price changes non-retroactive. Provider invoices remain the financial system of record; token-event totals can be checked with `ledger reconcile`, while non-token charge reconciliation remains a documented follow-up.
 
 ### CI and coding-agent spend
 

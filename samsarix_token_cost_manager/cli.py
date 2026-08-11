@@ -1,7 +1,7 @@
 # Copyright 2026 Samsarix LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Command-line interface for local token cost accounting."""
+"""Command-line interface for local LLM usage and cost accounting."""
 
 from __future__ import annotations
 
@@ -38,6 +38,8 @@ from .models import (
     DEFAULT_REGION,
     DEFAULT_SERVICE_TIER,
     BudgetStatus,
+    ChargeRecordResult,
+    ChargeSummaryRow,
     RecordResult,
     SummaryRow,
     decimal_text,
@@ -108,6 +110,40 @@ def _parser() -> argparse.ArgumentParser:
     )
     _add_price_selector_arguments(price_set, include_thresholds=True)
     price_commands.add_parser("list", help="list configured price versions")
+
+    unit_price = subparsers.add_parser("unit-price", help="manage non-token provider/SKU prices")
+    unit_price_commands = unit_price.add_subparsers(dest="unit_price_command", required=True)
+    unit_price_set = unit_price_commands.add_parser(
+        "set", help="add or replace a billable-unit price version"
+    )
+    unit_price_set.add_argument("--provider", required=True)
+    unit_price_set.add_argument("--sku", required=True)
+    unit_price_set.add_argument("--unit", required=True, help="pricing unit, such as request")
+    unit_price_set.add_argument("--rate", required=True, help="USD per pricing quantity")
+    unit_price_set.add_argument(
+        "--pricing-quantity", default="1", help="units covered by --rate (default: 1)"
+    )
+    unit_price_set.add_argument("--effective-from", help="ISO-8601 timestamp")
+    _add_price_selector_arguments(unit_price_set, include_thresholds=False)
+    unit_price_commands.add_parser("list", help="list configured billable-unit prices")
+
+    charge = subparsers.add_parser("charge", help="estimate, record, and report non-token cost")
+    charge_commands = charge.add_subparsers(dest="charge_command", required=True)
+    charge_estimate = charge_commands.add_parser("estimate", help="estimate one SKU charge")
+    _add_charge_arguments(charge_estimate, include_identity=False)
+    charge_record = charge_commands.add_parser("record", help="record one immutable SKU charge")
+    _add_charge_arguments(charge_record, include_identity=True)
+    charge_report = charge_commands.add_parser("report", help="summarize recorded SKU charges")
+    charge_report.add_argument("--since", help="inclusive ISO-8601 date/timestamp")
+    charge_report.add_argument("--until", help="exclusive ISO-8601 date/timestamp")
+    charge_report.add_argument("--month", help="UTC month in YYYY-MM form")
+    charge_report.add_argument("--project", help="limit the report to one project")
+    charge_report.add_argument("--dimension", action="append", default=[], metavar="KEY=VALUE")
+    charge_report.add_argument(
+        "--group-by",
+        default="none",
+        help="aggregation dimension (none, provider, sku, project, day, month, or dimension:KEY)",
+    )
 
     estimate = subparsers.add_parser("estimate", help="calculate cost without recording usage")
     _add_usage_arguments(estimate, include_identity=False)
@@ -187,6 +223,8 @@ def _parser() -> argparse.ArgumentParser:
     budget_check.add_argument("--amount", help="already-calculated estimated USD cost")
     budget_check.add_argument("--provider", help="provider for a token-based estimate")
     budget_check.add_argument("--model", help="model for a token-based estimate")
+    budget_check.add_argument("--sku", help="SKU for a billable-unit estimate")
+    budget_check.add_argument("--quantity", help="billable-unit quantity")
     budget_check.add_argument("--input-tokens", type=int, default=0)
     budget_check.add_argument("--output-tokens", type=int, default=0)
     budget_check.add_argument("--cached-input-tokens", type=int, default=0)
@@ -215,6 +253,20 @@ def _add_price_selector_arguments(
             type=int,
             help="inclusive upper threshold; omit for no upper bound",
         )
+
+
+def _add_charge_arguments(parser: argparse.ArgumentParser, *, include_identity: bool) -> None:
+    parser.add_argument("--provider", required=True)
+    parser.add_argument("--sku", required=True)
+    parser.add_argument("--quantity", required=True)
+    if include_identity:
+        parser.add_argument("--request-id", help="idempotency key scoped to provider/SKU")
+        parser.add_argument("--project", help="optional cost allocation project")
+        parser.add_argument("--dimension", action="append", default=[], metavar="KEY=VALUE")
+        parser.add_argument("--occurred-at", help="ISO-8601 timestamp (defaults to now)")
+    else:
+        parser.add_argument("--at", help="ISO-8601 timestamp (defaults to now)")
+    _add_price_selector_arguments(parser, include_thresholds=False)
 
 
 def _add_usage_arguments(parser: argparse.ArgumentParser, *, include_identity: bool) -> None:
@@ -440,6 +492,50 @@ def _render_prices(prices: Sequence[Any]) -> None:
     _table(headers, rows)
 
 
+def _render_unit_prices(prices: Sequence[Any]) -> None:
+    if not prices:
+        print("No billable-unit prices configured. Add one with `samsarix-cost unit-price set`.")
+        return
+    rows = [
+        (
+            price.provider,
+            price.sku,
+            price.price_plan,
+            price.service_tier,
+            price.region,
+            price.unit,
+            decimal_text(price.pricing_quantity),
+            _format_usd(price.rate_usd),
+            price.to_dict()["effective_from"],
+        )
+        for price in prices
+    ]
+    _table(
+        (
+            "PROVIDER",
+            "SKU",
+            "PLAN",
+            "TIER",
+            "REGION",
+            "UNIT",
+            "QUANTITY",
+            "RATE USD",
+            "EFFECTIVE",
+        ),
+        rows,
+    )
+
+
+def _render_charge_report(rows: Sequence[ChargeSummaryRow]) -> None:
+    if not rows:
+        print("No charge events matched the report filters.")
+        return
+    _table(
+        ("GROUP", "CHARGES", "TOTAL USD"),
+        [(row.group, str(row.charges), _format_usd(row.total_usd)) for row in rows],
+    )
+
+
 def _render_report(rows: Sequence[SummaryRow]) -> None:
     if not rows:
         print("No usage events matched the report filters.")
@@ -533,6 +629,32 @@ def _render_record_result(
         )
 
 
+def _render_charge_result(
+    manager: CostManager,
+    result: ChargeRecordResult,
+    *,
+    emit_json: bool,
+) -> None:
+    statuses = manager.check_budgets(
+        estimated_usd=Decimal("0"),
+        project=result.event.project,
+        at=result.event.occurred_at,
+    )
+    if emit_json:
+        payload = result.to_dict()
+        payload["budgets"] = [status.to_dict() for status in statuses]
+        _emit_json(payload)
+        return
+    verb = "Recorded" if result.created else "Already recorded"
+    print(f"{verb} {result.event.event_id}: {_format_usd(result.event.cost.total_usd)}")
+    if any(not status.allowed for status in statuses):
+        print(
+            "Warning: recorded spend exceeds an applicable budget; "
+            "use `budget check` before future calls.",
+            file=sys.stderr,
+        )
+
+
 def _dispatch(arguments: argparse.Namespace) -> int:
     database = arguments.db or default_database_path()
     with CostManager(database) as manager:
@@ -577,6 +699,87 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 _emit_json([price.to_dict() for price in prices])
             else:
                 _render_prices(prices)
+            return 0
+
+        if arguments.command == "unit-price" and arguments.unit_price_command == "set":
+            unit_price_result = manager.set_billable_unit_price(
+                provider=arguments.provider,
+                sku=arguments.sku,
+                unit=arguments.unit,
+                rate_usd=arguments.rate,
+                pricing_quantity=arguments.pricing_quantity,
+                effective_from=arguments.effective_from,
+                price_plan=arguments.price_plan,
+                service_tier=arguments.service_tier,
+                region=arguments.region,
+            )
+            if arguments.json:
+                _emit_json(unit_price_result.to_dict())
+            else:
+                print(
+                    f"Saved {unit_price_result.provider}/{unit_price_result.sku} pricing effective "
+                    f"{unit_price_result.to_dict()['effective_from']}."
+                )
+            return 0
+
+        if arguments.command == "unit-price" and arguments.unit_price_command == "list":
+            unit_prices = manager.list_billable_unit_prices()
+            if arguments.json:
+                _emit_json([unit_price.to_dict() for unit_price in unit_prices])
+            else:
+                _render_unit_prices(unit_prices)
+            return 0
+
+        if arguments.command == "charge" and arguments.charge_command == "estimate":
+            charge_estimate_result = manager.estimate_charge(
+                provider=arguments.provider,
+                sku=arguments.sku,
+                quantity=arguments.quantity,
+                at=arguments.at,
+                price_plan=arguments.price_plan,
+                service_tier=arguments.service_tier,
+                region=arguments.region,
+            )
+            if arguments.json:
+                _emit_json(charge_estimate_result.to_dict())
+            else:
+                print(f"Estimated charge: {_format_usd(charge_estimate_result.total_usd)}")
+            return 0
+
+        if arguments.command == "charge" and arguments.charge_command == "record":
+            charge_record_result = manager.record_charge(
+                provider=arguments.provider,
+                sku=arguments.sku,
+                quantity=arguments.quantity,
+                request_id=arguments.request_id,
+                project=arguments.project,
+                dimensions=_parse_dimensions(arguments.dimension),
+                occurred_at=arguments.occurred_at,
+                price_plan=arguments.price_plan,
+                service_tier=arguments.service_tier,
+                region=arguments.region,
+            )
+            _render_charge_result(manager, charge_record_result, emit_json=arguments.json)
+            return 0
+
+        if arguments.command == "charge" and arguments.charge_command == "report":
+            since = arguments.since
+            until = arguments.until
+            if arguments.month:
+                if since or until:
+                    raise ValidationError("month cannot be combined with since or until")
+                since, until = _month_bounds(arguments.month)
+            charge_rows = manager.summarize_charges(
+                since=since,
+                until=until,
+                project=arguments.project,
+                group_by=arguments.group_by,
+                dimensions=_parse_dimensions(arguments.dimension),
+            )
+            if arguments.json:
+                _emit_json([row.to_dict() for row in charge_rows])
+            else:
+                _render_charge_report(charge_rows)
             return 0
 
         if arguments.command == "estimate":
@@ -777,10 +980,24 @@ def _dispatch(arguments: argparse.Namespace) -> int:
             return 0
 
         if arguments.command == "budget" and arguments.budget_command == "check":
+            has_token_counts = any(
+                (
+                    arguments.input_tokens,
+                    arguments.output_tokens,
+                    arguments.cached_input_tokens,
+                    arguments.cache_write_input_tokens,
+                )
+            )
             if arguments.amount is not None:
-                if arguments.provider or arguments.model:
+                if (
+                    arguments.provider
+                    or arguments.model
+                    or arguments.sku
+                    or arguments.quantity is not None
+                    or has_token_counts
+                ):
                     raise ValidationError(
-                        "amount cannot be combined with provider/model token estimation"
+                        "amount cannot be combined with token or billable-unit estimation"
                     )
                 if (
                     arguments.price_plan != DEFAULT_PRICE_PLAN
@@ -793,20 +1010,40 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                     )
                 estimate = validated_decimal(arguments.amount, field="amount")
             else:
-                if not arguments.provider or not arguments.model:
-                    raise ValidationError("provide --amount or both --provider and --model")
-                estimate = manager.estimate(
-                    provider=arguments.provider,
-                    model=arguments.model,
-                    input_tokens=arguments.input_tokens,
-                    output_tokens=arguments.output_tokens,
-                    cached_input_tokens=arguments.cached_input_tokens,
-                    cache_write_input_tokens=arguments.cache_write_input_tokens,
-                    at=arguments.at,
-                    price_plan=arguments.price_plan,
-                    service_tier=arguments.service_tier,
-                    region=arguments.region,
-                ).total_usd
+                token_shape = bool(arguments.provider and arguments.model) and not (
+                    arguments.sku or arguments.quantity is not None
+                )
+                charge_shape = bool(
+                    arguments.provider and arguments.sku and arguments.quantity is not None
+                ) and not (arguments.model or has_token_counts)
+                if token_shape:
+                    estimate = manager.estimate(
+                        provider=arguments.provider,
+                        model=arguments.model,
+                        input_tokens=arguments.input_tokens,
+                        output_tokens=arguments.output_tokens,
+                        cached_input_tokens=arguments.cached_input_tokens,
+                        cache_write_input_tokens=arguments.cache_write_input_tokens,
+                        at=arguments.at,
+                        price_plan=arguments.price_plan,
+                        service_tier=arguments.service_tier,
+                        region=arguments.region,
+                    ).total_usd
+                elif charge_shape:
+                    estimate = manager.estimate_charge(
+                        provider=arguments.provider,
+                        sku=arguments.sku,
+                        quantity=arguments.quantity,
+                        at=arguments.at,
+                        price_plan=arguments.price_plan,
+                        service_tier=arguments.service_tier,
+                        region=arguments.region,
+                    ).total_usd
+                else:
+                    raise ValidationError(
+                        "provide --amount, provider/model token inputs, or "
+                        "provider/sku/quantity billable-unit inputs"
+                    )
             statuses = manager.check_budgets(
                 estimated_usd=estimate,
                 project=arguments.project,

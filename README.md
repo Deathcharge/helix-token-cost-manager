@@ -1,6 +1,6 @@
 # Samsarix Token Cost Manager
 
-Samsarix Token Cost Manager is a local-first Python library and CLI from Samsarix LLC for turning provider-reported LLM token usage into auditable USD cost records. It normalizes OpenAI, Anthropic, and OpenTelemetry GenAI usage without importing their SDKs, stores explicit time-versioned prices and immutable usage events in SQLite, attributes spend to business dimensions, and checks daily or monthly budgets before a model call.
+Samsarix Token Cost Manager is a local-first Python library and CLI from Samsarix LLC for turning provider-reported LLM usage into auditable USD cost records. It normalizes OpenAI, Anthropic, and OpenTelemetry GenAI token usage without importing their SDKs, prices non-token provider SKUs such as grounding, tool calls, images, and storage, stores immutable events in SQLite, attributes spend to business dimensions, and checks daily or monthly budgets before a call.
 
 It is for developers and small teams that need cost accounting without adopting an LLM gateway, hosted observability service, or private infrastructure. It never calls an LLM and has no runtime dependencies.
 
@@ -13,6 +13,7 @@ It is for developers and small teams that need cost accounting without adopting 
 - Applies the exact provider/model price that was effective when usage occurred.
 - Selects exact price books by contract plan, service tier, geography, and total-input threshold.
 - Prices cache reads and cache creation as separate, mutually exclusive buckets.
+- Prices arbitrary provider/SKU quantities such as requests, token-hours, images, or runtime units.
 - Snapshots rates and calculated cost so historical records do not change later.
 - Prevents duplicate accounting when a stable request ID is retried.
 - Groups spend by provider, model, project, day, or month.
@@ -124,6 +125,24 @@ samsarix-cost --db costs.sqlite3 price set \
 
 Pass the same `--price-plan`, `--service-tier`, and `--region` to `estimate`, `record`, `ingest`, or token-based `budget check`. Matching is exact and missing variants fail closed. See [docs/PRICE_BOOKS.md](docs/PRICE_BOOKS.md) for selector precedence, threshold semantics, provider evidence, migration, and ledger compatibility.
 
+## Account for non-token billable units
+
+Define exactly what a provider bills and how many units one rate covers, then estimate or record the observed quantity:
+
+```bash
+samsarix-cost --db costs.sqlite3 unit-price set \
+  --provider example --sku grounding-query --unit request \
+  --rate 35 --pricing-quantity 1000 --effective-from 2026-01-01
+
+samsarix-cost --db costs.sqlite3 charge record \
+  --provider example --sku grounding-query --quantity 1200 \
+  --project demo --dimension feature=research --request-id req-001
+
+samsarix-cost --db costs.sqlite3 charge report --group-by sku
+```
+
+The example records exactly `$42` because `1,200 × $35 / 1,000 = $42`. Prices use the same exact plan/tier/region/effective-date selectors as token price books. Charge retries are idempotent per request/provider/SKU, rates are snapshotted, and stored charge cost is included in budget spend. See [docs/BILLABLE_UNITS.md](docs/BILLABLE_UNITS.md) for the contract and current ledger boundary.
+
 ## Export, restore, and reconcile accounting evidence
 
 ```bash
@@ -152,7 +171,7 @@ samsarix-cost --db costs.sqlite3 budget check \
   --project demo
 ```
 
-`budget check` evaluates both global and matching project budgets. It exits `0` when allowed, `3` when projected spend exceeds a limit, and `2` for invalid input or another expected product error. Recording already-incurred usage never drops the record; it prints a warning if the stored event leaves a budget exceeded.
+`budget check` evaluates both global and matching project budgets. Use provider/model/token inputs for a token estimate, provider/SKU/quantity inputs for a billable-unit estimate, or `--amount` for a cost already calculated elsewhere. It exits `0` when allowed, `3` when projected spend exceeds a limit, and `2` for invalid input or another expected product error. Recording already-incurred usage never drops the record; it prints a warning if the stored event leaves a budget exceeded.
 
 For scripts, put `--json` before the command:
 
@@ -215,15 +234,17 @@ The deliberate public API is exported from `samsarix_token_cost_manager`: `CostM
 
 SQLite WAL mode and a five-second busy timeout support concurrent local processes. One `CostManager` instance also serializes access between threads. For a filesystem backup, close every connection before copying the database and its sidecar files. For an online backup, use SQLite's backup API (available as `sqlite3.Connection.backup()` in Python) or `VACUUM INTO`; do not sequentially copy live database and WAL files.
 
-The package stores provider/model names, token counts, timestamps, optional request IDs, optional project labels, bounded allocation dimensions, rates, and costs. It does not store prompts, responses, API keys, user content, or network endpoints. Dimension values are operator-supplied accounting metadata and should use pseudonymous or non-sensitive identifiers.
+The package stores provider/model/SKU/unit names, token counts or billable quantities, timestamps, optional request IDs, optional project labels, bounded allocation dimensions, rates, and costs. It does not store prompts, responses, API keys, user content, or network endpoints. Dimension values are operator-supplied accounting metadata and should use pseudonymous or non-sensitive identifiers.
 
 ## Command reference
 
 ```text
 samsarix-cost init
 samsarix-cost price set|list
+samsarix-cost unit-price set|list
 samsarix-cost estimate
 samsarix-cost record
+samsarix-cost charge estimate|record|report
 samsarix-cost ingest
 samsarix-cost report
 samsarix-cost ledger export
@@ -255,9 +276,9 @@ CI runs linting, formatting, type checks, and tests on Python 3.10, 3.11, and 3.
 
 - `adapters.py`: dependency-free OpenAI, Anthropic, and OpenTelemetry usage normalization.
 - `models.py`: bounded input validation and immutable decimal value objects.
-- `manager.py`: schema migration, pricing, immutable records, allocation dimensions, exact summaries, and budget evaluation.
+- `manager.py`: schema migration, token/SKU pricing, immutable records, allocation dimensions, exact summaries, and budget evaluation.
 - `cli.py`: standard-library CLI with stable JSON and exit-code contracts.
-- SQLite schema version `3`: selector-aware price books, explicit price history, cache-write accounting, usage events, allocation dimensions, and budget constraints. Version `1` and `2` databases migrate transactionally on open.
+- SQLite schema version `4`: selector-aware token and billable-unit prices, explicit price history, immutable usage/charge events, allocation dimensions, and budget constraints. Versions `1` through `3` migrate transactionally on open.
 
 There is no server, frontend, provider client, telemetry exporter, authentication layer, or cloud component. The local operator and filesystem boundary are the security model.
 
@@ -276,9 +297,10 @@ See [SECURITY.md](SECURITY.md) for the threat boundary and disclosure process.
 ## Limitations
 
 - Pricing must be maintained by the operator; no bundled catalog can silently become stale.
-- Only USD and token-based input/output/cache-read/cache-write rates are supported in schema version `3`.
+- Only USD is supported; exchange-rate snapshots and multi-currency reporting are not implemented.
 - The adapters normalize completed response/telemetry payloads but do not wrap SDK calls or fetch provider data.
-- There is no tokenizer, non-token tool/runtime charging, provider-specific invoice-file adapter, dashboard, or distributed aggregation.
+- Portable ledger export/import and invoice reconciliation currently cover token usage events only; non-token charges remain in SQLite, charge reports, and budget totals.
+- There is no tokenizer, provider-specific invoice-file adapter, dashboard, or distributed aggregation.
 - SQLite is intended for local/single-host use, not a shared network filesystem.
 - Budget checks cannot stop calls made through unrelated code; integrate the exit code or Python result into the caller.
 
