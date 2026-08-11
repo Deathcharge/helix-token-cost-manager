@@ -35,7 +35,7 @@ The original source remains recoverable from Git history. The non-standalone pro
 - [GitHub Actions' maintained actions](https://github.com/actions/setup-python/releases) were at `setup-python` v6 in the bounded July 2026 check; CI pins the reviewed `checkout` v6.0.2 and `setup-python` v6.2.0 release commits instead of mutable major tags.
 - The [Python release-status table](https://devguide.python.org/versions/) marks Python 3.9 end-of-life. The supported floor is Python 3.10 so the test stack can use pytest 9.0.3, which fixes [GHSA-6w46-j5rx-g56g](https://github.com/advisories/GHSA-6w46-j5rx-g56g).
 - The isolated build backend is pinned to setuptools 83.0.0, the fixed boundary for its [source-distribution exclusion bypass advisory](https://github.com/advisories/GHSA-h35f-9h28-mq5c).
-- The PyPI JSON endpoint for `samsarix-token-cost-manager` returned `404` on July 28, 2026. That is evidence only that no project was visible then, not a reservation or permission to publish.
+- The PyPI JSON endpoint for `samsarix-token-cost-manager` returned `404` again on August 11, 2026. That is evidence only that no project was visible then, not a reservation or permission to publish.
 
 No product-market fit or validated commercial demand is claimed.
 
@@ -166,24 +166,24 @@ The repository now implements the chosen vertical slice end to end: local setup,
 
 - **Release identity:** owner chooses whether `0.1.0` is the initial public tag.
 - **PyPI publication:** owner must control the PyPI organization/account, trusted publisher, and release approval. No credentials or external account were created.
+- **Release automation:** no tag/release workflow or default-branch protection is configured. Add and review those controls with the PyPI trusted-publisher identity before publication; do not improvise a credentialed upload from a workstation.
 
 There are no required provider credentials, production endpoints, databases, domains, or Samsarix services.
 
 ## Final verification evidence
 
-Local verification was run on Windows from the final candidate worktree. Generated environments and artifacts were excluded from source control and removed after inspection. The pushed branch and draft pull request also ran the committed hosted matrix.
+Local verification was run on Windows from the final candidate worktree. Generated environments and artifacts were excluded from source control. The merged exact head also ran the committed hosted matrix.
 
 | Gate | Result |
 |---|---|
-| Python 3.11 lint/format/type checks | Ruff lint and format checks passed; strict mypy passed for all six package modules. |
-| Python 3.11 tests | `50 passed, 1 skipped`; the skip is the POSIX-permission assertion on Windows; branch-aware coverage `94.19%` (required `90%`). |
-| Python 3.13 tests and quality | `50 passed, 1 skipped`; coverage `94.65%`; Ruff, strict mypy, and `pip check` passed. |
-| Python 3.10 dependency resolution | `pip install --dry-run --python-version 3.10` resolved the declared direct tool versions. No local Python 3.10 interpreter was available. |
+| Local quality | Ruff lint/format and strict mypy passed for all eight package modules. |
+| Local tests | `95 passed, 2 skipped`; branch-aware coverage `90.54%` (required `90%`). |
 | Build | `python -m build` produced the sdist and `py3-none-any` wheel using isolated setuptools 83.0.0; the wheel was built from the sdist. |
-| Metadata and content | `twine check` passed both artifacts. The wheel contained all six renamed modules, the Samsarix console entry point, Apache license and notice, and metadata; it declared Python `>=3.10` and no runtime dependencies. The sdist also contained the citation, trademark, security, productization, example, and test files. |
-| Installed journey | A fresh virtual environment installed the wheel with `--no-deps`; `pip check`, both CLI entry points, package metadata/import, price setup, a `$7.525` usage record/report, budget denial exit `3`, and `examples/quickstart.py` all passed from outside the source directory. |
+| Metadata and content | `twine check` passed both artifacts. The wheel contained all eight modules, the Samsarix console entry point, Apache license and notice, Python `>=3.10`, and no runtime dependencies. The sdist included all project docs, including billable-unit and release contracts. |
+| Installed journey | A fresh environment installed the wheel with `--no-deps` outside the source tree. Schema 4 initialization, an exact `$42.000000000000` SKU charge, charge reporting, combined projected spend `$45.500000000000`, and budget-denial exit `3` passed. |
+| Candidate digests | Wheel `7363e4e5f71e621825a0478a2953c257b795f162258b009acd786d3bd5b274ef`; sdist `42f12dd7f79a3a7e59c6036c6d78a998ffa09af41416f826b9f6c37096cf896f`. Rebuild from the approved tag and record the release digests rather than assuming local artifacts are final. |
 | Security hygiene | Bandit, credential-pattern, and local-link checks passed. `pip-audit 2.10.0` found no known advisories in the exact direct development pins; pytest and setuptools advisories discovered during review were remediated. The transitive contributor graph was not independently audited to completion or hash-locked, so no stronger claim is made. |
-| Hosted matrix | [GitHub Actions run 30392946064](https://github.com/Deathcharge/samsarix-token-cost-manager/actions/runs/30392946064) passed Python 3.10, 3.11, and 3.14 on Linux; Python 3.11 on Windows and macOS; and installed-package verification. |
+| Hosted matrix | Exact merged `main` commit `2a53ca7` passed [GitHub Actions run 31466993514](https://github.com/Deathcharge/samsarix-token-cost-manager/actions/runs/31466993514): Python 3.10, 3.11, and 3.14 on Linux; Python 3.11 on Windows and macOS; and installed-package verification. |
 
 ## Known risks
 
@@ -193,6 +193,7 @@ Local verification was run on Windows from the final candidate worktree. Generat
 - Labels can contain sensitive business identifiers if callers misuse them.
 - SQLite durability and concurrency guarantees depend on a supported local filesystem and a consistent backup made with closed connections or SQLite's online backup facilities.
 - Direct contributor tools are pinned, but transitive tools and hosted runner images are not hash-locked; this limits build reproducibility and is tracked as post-`0.1` hardening.
+- The public repository currently has no default-branch protection/ruleset, so CI is evidence rather than an enforced merge gate until the owner configures repository policy.
 
 ## Security, privacy, reliability, and operating cost
 
@@ -201,6 +202,8 @@ The product has no server attack surface, provider/network request path, secret 
 Software operating cost is effectively zero beyond local disk/CPU. The package does not incur model/API calls. The user's external LLM cost is computed transparently as:
 
 `input_tokens × input_rate / 1,000,000 + output_tokens × output_rate / 1,000,000 + cache_read_tokens × cache_read_rate / 1,000,000 + cache_write_tokens × cache_write_rate / 1,000,000`
+
+Non-token charges use `quantity × rate_usd / pricing_quantity`; both paths are quantized to `0.000000000001` USD.
 
 ## Distribution and sustainability model
 
