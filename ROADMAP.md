@@ -34,8 +34,8 @@ Current hardening backlog:
 ## Competitive milestones
 
 1. **Interoperable ingestion and allocation — landed:** OpenAI, Anthropic, and OpenTelemetry normalization; cache-read/cache-write accounting; schema `1` to `2` migration; bounded dimensions; dimension filters/groups; CLI JSON ingestion.
-2. **Portable ledger and reconciliation — active:** deterministic JSONL/CSV export, atomic artifact writes and transactional restore, import validation/dry-run, provider-invoice comparison, and stable artifact digests. Provider-specific invoice-file adapters and full database backup remain follow-up work.
-3. **Pricing fidelity:** threshold/tier pricing, batch and residency modifiers, non-token tool/runtime units, and explicit negotiated-rate overlays.
+2. **Portable ledger and reconciliation — landed:** deterministic JSONL/CSV export, atomic artifact writes and transactional restore, import validation/dry-run, provider-invoice comparison, and stable artifact digests. Provider-specific invoice-file adapters and full database backup remain follow-up work.
+3. **Pricing fidelity — active:** exact threshold, service-tier, region, and negotiated-plan selectors are implemented with immutable provenance and backward-compatible migration. Non-token tool/runtime quantities remain follow-up work.
 4. **Guardrails:** atomic local reservations, alerts, forecasts, anomalies, and optimization recommendations with explainable evidence.
 5. **Adoption:** one Samsarix consumer contract, production signal, published package provenance, support window, and migration policy.
 

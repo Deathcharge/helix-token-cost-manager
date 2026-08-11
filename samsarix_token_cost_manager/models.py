@@ -19,7 +19,11 @@ DecimalInput = Union[Decimal, int, str, float]
 MAX_TEXT_LENGTH = 200
 MAX_DIMENSIONS = 32
 MAX_TOKENS = 1_000_000_000_000
+MAX_RATED_INPUT_TOKENS = MAX_TOKENS * 3
 GLOBAL_SCOPE = "*"
+DEFAULT_PRICE_PLAN = "list"
+DEFAULT_SERVICE_TIER = "standard"
+DEFAULT_REGION = "global"
 MAX_RATE_USD_PER_MILLION = Decimal("1000000")
 USD_QUANTUM = Decimal("0.000000000001")
 
@@ -101,6 +105,18 @@ def validated_tokens(value: object, *, field: str) -> int:
     return value
 
 
+def validated_input_threshold(value: object, *, field: str) -> int:
+    """Validate a threshold over all three mutually exclusive input buckets."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValidationError(f"{field} must be an integer")
+    if value < 0:
+        raise ValidationError(f"{field} must be non-negative")
+    if value > MAX_RATED_INPUT_TOKENS:
+        raise ValidationError(f"{field} must not exceed {MAX_RATED_INPUT_TOKENS}")
+    return value
+
+
 def validated_dimensions(
     value: Optional[Mapping[str, str]],
 ) -> Tuple[Tuple[str, str], ...]:
@@ -173,6 +189,11 @@ class ModelPrice:
     cached_input_usd_per_million: Decimal
     cache_write_input_usd_per_million: Decimal
     effective_from: datetime
+    price_plan: str = DEFAULT_PRICE_PLAN
+    service_tier: str = DEFAULT_SERVICE_TIER
+    region: str = DEFAULT_REGION
+    input_token_min: int = 0
+    input_token_max: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-safe representation."""
@@ -187,6 +208,11 @@ class ModelPrice:
                 self.cache_write_input_usd_per_million
             ),
             "effective_from": format_timestamp(self.effective_from),
+            "price_plan": self.price_plan,
+            "service_tier": self.service_tier,
+            "region": self.region,
+            "input_token_min": self.input_token_min,
+            "input_token_max": self.input_token_max,
         }
 
 

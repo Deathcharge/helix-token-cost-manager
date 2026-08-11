@@ -11,6 +11,7 @@ It is for developers and small teams that need cost accounting without adopting 
 - Records the token counts returned by any provider or gateway.
 - Ingests OpenAI, Anthropic, and OpenTelemetry GenAI JSON payloads directly.
 - Applies the exact provider/model price that was effective when usage occurred.
+- Selects exact price books by contract plan, service tier, geography, and total-input threshold.
 - Prices cache reads and cache creation as separate, mutually exclusive buckets.
 - Snapshots rates and calculated cost so historical records do not change later.
 - Prevents duplicate accounting when a stable request ID is retried.
@@ -109,6 +110,20 @@ samsarix-cost --db costs.sqlite3 report \
 
 See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for response fixtures, normalization rules, privacy guidance, and real deployment patterns.
 
+## Model real provider pricing
+
+Price books represent long-context bands, batch/flex/priority processing, residency premiums, and negotiated contracts without embedding provider rates:
+
+```bash
+samsarix-cost --db costs.sqlite3 price set \
+  --provider example --model model-v1 \
+  --price-plan enterprise-2026 --service-tier priority --region us \
+  --input-token-min 200001 --input 6 --output 22.5 \
+  --effective-from 2026-01-01
+```
+
+Pass the same `--price-plan`, `--service-tier`, and `--region` to `estimate`, `record`, `ingest`, or token-based `budget check`. Matching is exact and missing variants fail closed. See [docs/PRICE_BOOKS.md](docs/PRICE_BOOKS.md) for selector precedence, threshold semantics, provider evidence, migration, and ledger compatibility.
+
 ## Export, restore, and reconcile accounting evidence
 
 ```bash
@@ -186,7 +201,7 @@ The deliberate public API is exported from `samsarix_token_cost_manager`: `CostM
 - Rates are USD per one million units and are stored as decimal strings.
 - `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, and `output_tokens` are mutually exclusive buckets. OpenAI and OpenTelemetry adapters subtract cache subsets from their inclusive input totals; Anthropic already reports separate buckets.
 - Provider-reported usage is preferred. This package does not guess tokens from prompts or responses.
-- Price matching is exact on `provider` and `model`; it does not use fuzzy aliases that could silently apply the wrong rate.
+- Price matching is exact on `provider`, `model`, `price_plan`, `service_tier`, `region`, and the inclusive total-input range; it does not use fuzzy aliases or cross-selector fallback.
 - `effective_from` and all budget periods use UTC. A date means midnight UTC.
 - Historical events contain the selected rate version and calculated cost. Updating a price affects later records only.
 - Cost is quantized to one trillionth of a USD using `Decimal`, avoiding binary floating-point drift.
@@ -242,7 +257,7 @@ CI runs linting, formatting, type checks, and tests on Python 3.10, 3.11, and 3.
 - `models.py`: bounded input validation and immutable decimal value objects.
 - `manager.py`: schema migration, pricing, immutable records, allocation dimensions, exact summaries, and budget evaluation.
 - `cli.py`: standard-library CLI with stable JSON and exit-code contracts.
-- SQLite schema version `2`: explicit price history, cache-write accounting, usage events, allocation dimensions, and budget constraints. Version `1` databases migrate transactionally on open.
+- SQLite schema version `3`: selector-aware price books, explicit price history, cache-write accounting, usage events, allocation dimensions, and budget constraints. Version `1` and `2` databases migrate transactionally on open.
 
 There is no server, frontend, provider client, telemetry exporter, authentication layer, or cloud component. The local operator and filesystem boundary are the security model.
 
@@ -261,9 +276,9 @@ See [SECURITY.md](SECURITY.md) for the threat boundary and disclosure process.
 ## Limitations
 
 - Pricing must be maintained by the operator; no bundled catalog can silently become stale.
-- Only USD and token-based input/output/cache-read/cache-write rates are supported in schema version `2`.
+- Only USD and token-based input/output/cache-read/cache-write rates are supported in schema version `3`.
 - The adapters normalize completed response/telemetry payloads but do not wrap SDK calls or fetch provider data.
-- There is no tokenizer, tiered/context-length pricing, non-token tool/runtime charging, provider-specific invoice-file adapter, dashboard, or distributed aggregation.
+- There is no tokenizer, non-token tool/runtime charging, provider-specific invoice-file adapter, dashboard, or distributed aggregation.
 - SQLite is intended for local/single-host use, not a shared network filesystem.
 - Budget checks cannot stop calls made through unrelated code; integrate the exit code or Python result into the caller.
 

@@ -78,7 +78,7 @@ def test_jsonl_export_is_canonical_deterministic_and_verifiable(tmp_path) -> Non
     lines = [json.loads(line) for line in first.content.decode("utf-8").splitlines()]
     assert lines[0] == {
         "format": "samsarix-usage-ledger",
-        "format_version": 1,
+        "format_version": 2,
         "type": "manifest",
     }
     assert [line["record"]["request_id"] for line in lines[1:]] == ["req-first", "req-later"]
@@ -86,6 +86,27 @@ def test_jsonl_export_is_canonical_deterministic_and_verifiable(tmp_path) -> Non
         "team": "success",
         "tenant": "customer-a",
     }
+
+
+def test_jsonl_v1_import_defaults_price_book_selectors(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    with CostManager(tmp_path / "ledger.sqlite3") as manager:
+        events = _events(manager)
+        lines = [json.loads(line) for line in export_jsonl(events).content.decode().splitlines()]
+    lines[0]["format_version"] = 1
+    for envelope in lines[1:]:
+        for field in (
+            "price_plan",
+            "service_tier",
+            "region",
+            "price_input_token_min",
+            "price_input_token_max",
+        ):
+            envelope["record"].pop(field)
+    legacy = (
+        "\n".join(json.dumps(line, sort_keys=True, separators=(",", ":")) for line in lines) + "\n"
+    ).encode()
+
+    assert import_jsonl(legacy) == events
 
 
 def test_csv_export_is_rfc_compatible_and_exact(tmp_path) -> None:  # type: ignore[no-untyped-def]

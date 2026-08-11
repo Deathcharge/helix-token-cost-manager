@@ -37,7 +37,7 @@ samsarix-cost --db restored.sqlite3 ledger import \
 Remove `--dry-run` only after reviewing the result. JSONL and CSV imports:
 
 - enforce 100 MiB and one-million-record limits;
-- require UTF-8 and the exact version-1 manifest/header;
+- require UTF-8 and a supported manifest/header (exports use version 2; version 1 remains importable);
 - validate every identifier, timestamp, dimension, token count, rate, and decimal;
 - recompute each cost component and total from snapshotted tokens and rates;
 - reject duplicate event or request identities within the artifact;
@@ -48,7 +48,7 @@ Remove `--dry-run` only after reviewing the result. JSONL and CSV imports:
 
 When `--errors-file` is supplied, a rejected import atomically writes a deterministic JSON error record containing the source digest and validation/conflict message. The error ledger is refused if its destination already exists, preventing accidental loss of earlier evidence.
 
-Import preserves event IDs, timestamps, dimensions, rates, component costs, and totals. It does not require the destination to have the source price catalog because each immutable event carries its price snapshot.
+Import preserves event IDs, timestamps, dimensions, price-book selectors and thresholds, rates, component costs, and totals. It does not require the destination to have the source price catalog because each immutable event carries its price snapshot. Version-1 artifacts receive the default `list` / `standard` / `global` unbounded selector.
 
 ## Reconcile an invoice
 

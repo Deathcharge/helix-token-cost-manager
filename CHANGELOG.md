@@ -8,6 +8,9 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ### Added
 
+- Exact price-book selection by contract plan, processing tier, geography, and inclusive total-input thresholds for long-context, batch/flex/priority, residency, and negotiated-rate modeling.
+- SQLite schema `1`/`2` to `3` migration and portable ledger version `2` with backward-compatible version `1` import defaults.
+
 - Deterministic JSONL and RFC 4180 CSV ledger export with atomic file replacement, stable SHA-256 digests, bounded validated import, dry-run conflict analysis, and idempotent transactional restore.
 - Provider-period invoice reconciliation with exact signed variance, explicit tolerance and invoice identity, JSON output, and a distinct non-match exit status.
 

@@ -66,6 +66,60 @@ def configure_price(database: Path) -> None:
     assert result.returncode == 0
 
 
+def test_cli_selects_explicit_price_plan_tier_region_and_threshold(tmp_path: Path) -> None:
+    database = tmp_path / "costs.sqlite3"
+    configured = run_cli(
+        database,
+        "price",
+        "set",
+        "--provider",
+        "example",
+        "--model",
+        "tiered",
+        "--input",
+        "4",
+        "--output",
+        "20",
+        "--price-plan",
+        "contract-a",
+        "--service-tier",
+        "priority",
+        "--region",
+        "us",
+        "--input-token-min",
+        "100",
+        "--effective-from",
+        "2026-01-01",
+    )
+    estimated = run_cli(
+        database,
+        "estimate",
+        "--provider",
+        "example",
+        "--model",
+        "tiered",
+        "--input-tokens",
+        "1000000",
+        "--price-plan",
+        "contract-a",
+        "--service-tier",
+        "priority",
+        "--region",
+        "us",
+        "--at",
+        "2026-07-01",
+        json_output=True,
+    )
+
+    assert configured.returncode == 0
+    assert estimated.returncode == 0
+    payload = json.loads(estimated.stdout)
+    assert payload["total_usd"] == "4.000000000000"
+    assert payload["price"]["price_plan"] == "contract-a"
+    assert payload["price"]["service_tier"] == "priority"
+    assert payload["price"]["region"] == "us"
+
+
 def test_help_and_version_are_real_process_entry_points() -> None:
     help_result = subprocess.run(
         [sys.executable, "-m", "samsarix_token_cost_manager", "--help"],
