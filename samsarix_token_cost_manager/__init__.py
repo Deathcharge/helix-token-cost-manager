@@ -1,7 +1,7 @@
 # Copyright 2026 Samsarix LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Local-first, provider-neutral token usage and cost accounting."""
+"""Local-first, provider-neutral LLM usage and cost accounting."""
 
 from .adapters import (
     UsageMeasurement,
@@ -28,7 +28,12 @@ from .ledger import (
 )
 from .manager import CostManager, default_database_path
 from .models import (
+    BillableUnitPrice,
     BudgetStatus,
+    ChargeCost,
+    ChargeEvent,
+    ChargeRecordResult,
+    ChargeSummaryRow,
     CostBreakdown,
     ModelPrice,
     RecordResult,
@@ -37,7 +42,12 @@ from .models import (
 )
 
 __all__ = [
+    "BillableUnitPrice",
     "BudgetStatus",
+    "ChargeCost",
+    "ChargeEvent",
+    "ChargeRecordResult",
+    "ChargeSummaryRow",
     "CostBreakdown",
     "CostManager",
     "CostManagerError",

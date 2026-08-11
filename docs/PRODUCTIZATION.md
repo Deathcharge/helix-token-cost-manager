@@ -14,15 +14,15 @@ The original source remains recoverable from Git history. The non-standalone pro
 
 ## Chosen product definition
 
-**Product:** Samsarix Token Cost Manager, a dependency-free, local-first Python library and CLI from Samsarix LLC for explicit LLM token-price management, immutable usage-cost recording, exact spend reporting, and pre-call budget checks.
+**Product:** Samsarix Token Cost Manager, a dependency-free, local-first Python library and CLI from Samsarix LLC for explicit LLM token and billable-unit price management, immutable cost recording, exact spend reporting, and pre-call budget checks.
 
 **Target user:** an application developer or small team receiving token counts from one or more provider SDKs who wants auditable cost data without deploying a gateway or hosted observability system.
 
-**Primary journey:** install the wheel; add exact time-versioned pricing; record a provider-reported usage event with an idempotency key; inspect spend by model/project/month; check an applicable budget before the next call.
+**Primary journey:** install the wheel; add exact time-versioned token or provider/SKU pricing; record provider-reported usage with an idempotency key; inspect allocated spend; check an applicable budget before the next call.
 
 **Independent reason to exist:** LiteLLM is primarily a broad provider SDK/gateway and Langfuse is an observability platform. This package is a much smaller offline accounting component with no network, provider, service, or credential dependency. It can complement either product or a direct provider integration.
 
-**Deliberately out of scope for `0.1`:** provider/network calls, tokenization, prompt/response storage, telemetry export, a web UI, authentication, cloud services, subscriptions, automatic price downloads, fuzzy model aliases, multi-currency accounting, non-token SKU charging, provider-specific invoice-file adapters, and distributed databases.
+**Deliberately out of scope for `0.1`:** provider/network calls, tokenization, prompt/response storage, telemetry export, a web UI, authentication, cloud services, subscriptions, automatic price downloads, fuzzy model aliases, multi-currency accounting, mixed-event portable ledgers, provider-specific invoice-file adapters, and distributed databases.
 
 ## Evidence from current ecosystem research
 
@@ -52,6 +52,7 @@ The owner asked for the strongest practical licensing fit for attribution and pr
 - **Mutually exclusive buckets:** normal input, cache-read input, cache-write input, and output cannot overlap by contract.
 - **Decimal arithmetic and string persistence:** costs are quantized to `0.000000000001` USD; SQLite aggregation is done as streamed Python `Decimal` data to avoid float drift.
 - **Effective-dated price books:** exact provider/model/plan/tier/region and total-input-band matching selects the newest applicable rule and snapshots its selector, bounds, and rates into the immutable event.
+- **Separate billable units:** provider/SKU rates use explicit pricing quantities and units so requests, storage, images, runtime, and similar charges are not mislabeled as tokens.
 - **SQLite WAL:** the smallest durable local persistence with transactions, cross-process coordination, bounded wait, and no service dependency.
 - **Idempotent record keys:** request ID retries return the existing identical event; conflicting reuse fails.
 - **Advisory budgets:** checks return a stable denial code before spend. Post-call recording never discards incurred usage.
@@ -117,7 +118,7 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 ### P2 — valuable post-`0.1` work
 
 1. Provider-specific invoice-file adapters and additional adapter conformance fixtures.
-2. Additional mutually exclusive usage types and non-token billable units.
+2. Mixed token/charge portable ledger export, restore, and invoice reconciliation.
 3. Multi-currency support with explicit exchange-rate snapshots.
 4. Database backup/restore tooling beyond automatic schema migration.
 5. Optional retention/archival commands for high-volume local stores.
@@ -129,7 +130,8 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 - [x] Zero runtime dependencies and pinned direct contributor tooling.
 - [x] Validated immutable value objects and expected exception hierarchy.
 - [x] Effective-dated exact price books with plan, service-tier, region, and context-threshold selectors and fail-closed lookup.
-- [x] SQLite schema `3`, transactional migration, WAL mode, indexes, and permission hardening.
+- [x] SQLite schema `4`, transactional migration, WAL mode, indexes, and permission hardening.
+- [x] Effective-dated non-token provider/SKU prices, immutable charge events, allocation reports, and combined budget spend.
 - [x] Dependency-free OpenAI, Anthropic, and OpenTelemetry adapters with compatibility fixtures.
 - [x] Bounded allocation dimensions with conjunctive filters and dimension grouping.
 - [x] Deterministic JSONL/CSV export, validated transactional import, dry-run/error ledgers, stable digests, and provider-total reconciliation.
@@ -156,7 +158,7 @@ Commands were run from the clean baseline on Python `3.11.9` with pip `26.1.1`:
 
 ## Completed work
 
-The repository now implements the chosen vertical slice end to end: local setup, explicit first price, usage estimation, persistent/idempotent recording, empty and error handling, exact reports, pre-call budgets, programmatic output, tests, packaging, CI, and accurate user/security/release documentation. The previous provider/agent extraction remains available in Git history but is no longer shipped.
+The repository now implements the chosen vertical slice end to end: local setup, explicit token and provider/SKU prices, usage estimation, persistent/idempotent records, empty and error handling, exact reports, combined pre-call budgets, programmatic output, tests, packaging, CI, and accurate user/security/release documentation. The previous provider/agent extraction remains available in Git history but is no longer shipped.
 
 ## Deferred and blocked work
 

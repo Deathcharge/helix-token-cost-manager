@@ -55,6 +55,6 @@ Those sources motivate a provider-neutral selector model. They are not copied in
 
 ## Compatibility
 
-SQLite schema version 3 migrates schema 1 or 2 prices to the default `list` / `standard` / `global` unbounded selector. Portable ledger version 2 records selectors and threshold provenance. JSONL and CSV version 1 artifacts remain importable with those same defaults.
+SQLite schema version 3 introduced selector-aware token prices; current schema version 4 transactionally migrates schema 1, 2, or 3 databases and adds separate billable-unit prices. Portable ledger version 2 records token selectors and threshold provenance. JSONL and CSV version 1 artifacts remain importable with those same defaults.
 
 Non-token SKUs such as cache storage, grounding queries, tool calls, containers, and runtime are intentionally separate from token price books. They require an explicit quantity/unit charge model rather than pretending they are tokens.

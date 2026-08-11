@@ -138,6 +138,184 @@ def test_cli_selects_explicit_price_plan_tier_region_and_threshold(tmp_path: Pat
     assert repriced["price"]["region"] == "us"
 
 
+def test_cli_billable_unit_price_charge_record_and_report(tmp_path: Path) -> None:
+    database = tmp_path / "charges.sqlite3"
+    selector_arguments = (
+        "--price-plan",
+        "contract-a",
+        "--service-tier",
+        "priority",
+        "--region",
+        "us",
+    )
+    configured = run_cli(
+        database,
+        "unit-price",
+        "set",
+        "--provider",
+        "google",
+        "--sku",
+        "grounding-query",
+        "--unit",
+        "request",
+        "--rate",
+        "35",
+        "--pricing-quantity",
+        "1000",
+        "--effective-from",
+        "2026-01-01",
+        *selector_arguments,
+        json_output=True,
+    )
+    prices = run_cli(database, "unit-price", "list", json_output=True)
+    estimated = run_cli(
+        database,
+        "charge",
+        "estimate",
+        "--provider",
+        "google",
+        "--sku",
+        "grounding-query",
+        "--quantity",
+        "1200",
+        "--at",
+        "2026-07-01",
+        *selector_arguments,
+        json_output=True,
+    )
+    recorded = run_cli(
+        database,
+        "charge",
+        "record",
+        "--provider",
+        "google",
+        "--sku",
+        "grounding-query",
+        "--quantity",
+        "100",
+        "--request-id",
+        "charge-1",
+        "--project",
+        "assistant",
+        "--dimension",
+        "team=product",
+        "--occurred-at",
+        "2026-07-01",
+        *selector_arguments,
+        json_output=True,
+    )
+    repeated = run_cli(
+        database,
+        "charge",
+        "record",
+        "--provider",
+        "google",
+        "--sku",
+        "grounding-query",
+        "--quantity",
+        "100",
+        "--request-id",
+        "charge-1",
+        "--project",
+        "assistant",
+        "--dimension",
+        "team=product",
+        *selector_arguments,
+        json_output=True,
+    )
+    run_cli(
+        database,
+        "budget",
+        "set",
+        "--amount",
+        "4",
+        "--period",
+        "monthly",
+        "--project",
+        "assistant",
+    )
+    budget_denied = run_cli(
+        database,
+        "budget",
+        "check",
+        "--provider",
+        "google",
+        "--sku",
+        "grounding-query",
+        "--quantity",
+        "20",
+        "--project",
+        "assistant",
+        "--at",
+        "2026-07-15",
+        *selector_arguments,
+        json_output=True,
+    )
+    report = run_cli(
+        database,
+        "charge",
+        "report",
+        "--month",
+        "2026-07",
+        "--group-by",
+        "dimension:team",
+        "--dimension",
+        "team=product",
+        json_output=True,
+    )
+    human_prices = run_cli(database, "unit-price", "list")
+    human_estimate = run_cli(
+        database,
+        "charge",
+        "estimate",
+        "--provider",
+        "google",
+        "--sku",
+        "grounding-query",
+        "--quantity",
+        "100",
+        "--at",
+        "2026-07-01",
+        *selector_arguments,
+    )
+    human_record = run_cli(
+        database,
+        "charge",
+        "record",
+        "--provider",
+        "google",
+        "--sku",
+        "grounding-query",
+        "--quantity",
+        "100",
+        "--request-id",
+        "charge-1",
+        "--project",
+        "assistant",
+        "--dimension",
+        "team=product",
+        *selector_arguments,
+    )
+    human_report = run_cli(database, "charge", "report", "--group-by", "sku")
+
+    assert configured.returncode == prices.returncode == estimated.returncode == 0
+    assert json.loads(configured.stdout)["pricing_quantity"] == "1000"
+    assert json.loads(prices.stdout)[0]["sku"] == "grounding-query"
+    assert json.loads(estimated.stdout)["total_usd"] == "42.000000000000"
+    assert json.loads(recorded.stdout)["created"] is True
+    assert json.loads(recorded.stdout)["event"]["cost"]["total_usd"] == "3.500000000000"
+    assert json.loads(repeated.stdout)["created"] is False
+    assert budget_denied.returncode == 3
+    assert json.loads(budget_denied.stdout)["estimated_usd"] == "0.700000000000"
+    assert json.loads(report.stdout) == [
+        {"charges": 1, "group": "product", "total_usd": "3.500000000000"}
+    ]
+    assert "grounding-query" in human_prices.stdout
+    assert "Estimated charge: $3.5" in human_estimate.stdout
+    assert "Already recorded" in human_record.stdout
+    assert "google/grounding-query" in human_report.stdout
+
+
 def test_help_and_version_are_real_process_entry_points() -> None:
     help_result = subprocess.run(
         [sys.executable, "-m", "samsarix_token_cost_manager", "--help"],
@@ -383,6 +561,9 @@ def test_cli_validation_and_database_errors_are_actionable(tmp_path: Path) -> No
         "--price-plan",
         "enterprise-2026",
     )
+    amount_with_tokens = run_cli(
+        database, "budget", "check", "--amount", "1", "--input-tokens", "1"
+    )
     directory_as_database = run_cli(tmp_path, "init", json_output=True)
 
     assert bad_month.returncode == 2 and "YYYY-MM" in bad_month.stderr
@@ -396,6 +577,8 @@ def test_cli_validation_and_database_errors_are_actionable(tmp_path: Path) -> No
     assert invalid_amount.returncode == 2 and "finite" in invalid_amount.stderr
     assert amount_with_selector.returncode == 2
     assert "cannot be combined" in amount_with_selector.stderr
+    assert amount_with_tokens.returncode == 2
+    assert "cannot be combined" in amount_with_tokens.stderr
     assert directory_as_database.returncode == 2
     assert "database operation failed" in json.loads(directory_as_database.stdout)["error"]
 

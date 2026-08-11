@@ -1,7 +1,7 @@
 # Copyright 2026 Samsarix LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""SQLite-backed, local-first token usage and cost accounting."""
+"""SQLite-backed, local-first LLM usage and cost accounting."""
 
 from __future__ import annotations
 
@@ -25,8 +25,14 @@ from .models import (
     DEFAULT_REGION,
     DEFAULT_SERVICE_TIER,
     GLOBAL_SCOPE,
+    MAX_BILLABLE_QUANTITY,
     MAX_RATE_USD_PER_MILLION,
+    BillableUnitPrice,
     BudgetStatus,
+    ChargeCost,
+    ChargeEvent,
+    ChargeRecordResult,
+    ChargeSummaryRow,
     CostBreakdown,
     DecimalInput,
     ModelPrice,
@@ -45,7 +51,7 @@ from .models import (
     validated_tokens,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 VALID_PERIODS = ("daily", "monthly")
 VALID_GROUPS = ("none", "provider", "model", "project", "day", "month")
 MILLION = Decimal(1_000_000)
@@ -65,7 +71,7 @@ def default_database_path() -> Path:
 
 
 class CostManager:
-    """Record immutable usage events and query exact local cost summaries.
+    """Record immutable usage or charge events and query exact local cost summaries.
 
     A manager owns one SQLite connection and may be used as a context manager. One
     instance is safe to share between threads; separate processes coordinate through
@@ -214,6 +220,56 @@ class CostManager:
                         updated_at TEXT NOT NULL,
                         PRIMARY KEY (scope, period)
                     );
+
+                    CREATE TABLE IF NOT EXISTS billable_unit_prices (
+                        provider TEXT NOT NULL,
+                        sku TEXT NOT NULL,
+                        price_plan TEXT NOT NULL,
+                        service_tier TEXT NOT NULL,
+                        region TEXT NOT NULL,
+                        effective_from TEXT NOT NULL,
+                        unit TEXT NOT NULL,
+                        rate_usd TEXT NOT NULL,
+                        pricing_quantity TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (
+                            provider, sku, price_plan, service_tier, region, effective_from
+                        )
+                    );
+
+                    CREATE TABLE IF NOT EXISTS charge_events (
+                        event_id TEXT PRIMARY KEY,
+                        request_id TEXT,
+                        occurred_at TEXT NOT NULL,
+                        recorded_at TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        sku TEXT NOT NULL,
+                        project TEXT,
+                        price_plan TEXT NOT NULL,
+                        service_tier TEXT NOT NULL,
+                        region TEXT NOT NULL,
+                        quantity TEXT NOT NULL,
+                        unit TEXT NOT NULL,
+                        rate_usd TEXT NOT NULL,
+                        pricing_quantity TEXT NOT NULL,
+                        price_effective_from TEXT NOT NULL,
+                        total_cost TEXT NOT NULL,
+                        UNIQUE (request_id, provider, sku)
+                    );
+                    CREATE INDEX IF NOT EXISTS charge_events_occurred_at
+                    ON charge_events (occurred_at);
+                    CREATE INDEX IF NOT EXISTS charge_events_project_occurred_at
+                    ON charge_events (project, occurred_at);
+
+                    CREATE TABLE IF NOT EXISTS charge_dimensions (
+                        event_id TEXT NOT NULL
+                            REFERENCES charge_events(event_id) ON DELETE CASCADE,
+                        key TEXT NOT NULL,
+                        value TEXT NOT NULL,
+                        PRIMARY KEY (event_id, key)
+                    );
+                    CREATE INDEX IF NOT EXISTS charge_dimensions_lookup
+                    ON charge_dimensions (key, value, event_id);
                     """
                 )
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -293,6 +349,66 @@ class CostManager:
                     ALTER TABLE usage_events
                         ADD COLUMN price_input_token_max INTEGER NOT NULL DEFAULT -1;
                     PRAGMA user_version = 3;
+                    COMMIT;
+                    """
+                )
+                version = 3
+            except Exception:
+                connection.rollback()
+                raise
+        if version == 3:
+            try:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE billable_unit_prices (
+                        provider TEXT NOT NULL,
+                        sku TEXT NOT NULL,
+                        price_plan TEXT NOT NULL,
+                        service_tier TEXT NOT NULL,
+                        region TEXT NOT NULL,
+                        effective_from TEXT NOT NULL,
+                        unit TEXT NOT NULL,
+                        rate_usd TEXT NOT NULL,
+                        pricing_quantity TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (
+                            provider, sku, price_plan, service_tier, region, effective_from
+                        )
+                    );
+                    CREATE TABLE charge_events (
+                        event_id TEXT PRIMARY KEY,
+                        request_id TEXT,
+                        occurred_at TEXT NOT NULL,
+                        recorded_at TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        sku TEXT NOT NULL,
+                        project TEXT,
+                        price_plan TEXT NOT NULL,
+                        service_tier TEXT NOT NULL,
+                        region TEXT NOT NULL,
+                        quantity TEXT NOT NULL,
+                        unit TEXT NOT NULL,
+                        rate_usd TEXT NOT NULL,
+                        pricing_quantity TEXT NOT NULL,
+                        price_effective_from TEXT NOT NULL,
+                        total_cost TEXT NOT NULL,
+                        UNIQUE (request_id, provider, sku)
+                    );
+                    CREATE INDEX charge_events_occurred_at
+                    ON charge_events (occurred_at);
+                    CREATE INDEX charge_events_project_occurred_at
+                    ON charge_events (project, occurred_at);
+                    CREATE TABLE charge_dimensions (
+                        event_id TEXT NOT NULL
+                            REFERENCES charge_events(event_id) ON DELETE CASCADE,
+                        key TEXT NOT NULL,
+                        value TEXT NOT NULL,
+                        PRIMARY KEY (event_id, key)
+                    );
+                    CREATE INDEX charge_dimensions_lookup
+                    ON charge_dimensions (key, value, event_id);
+                    PRAGMA user_version = 4;
                     COMMIT;
                     """
                 )
@@ -580,6 +696,340 @@ class CostManager:
             total_usd=money(input_cost + output_cost + cached_cost + cache_write_cost),
             price=price,
         )
+
+    def set_billable_unit_price(
+        self,
+        *,
+        provider: str,
+        sku: str,
+        unit: str,
+        rate_usd: DecimalInput,
+        pricing_quantity: DecimalInput = Decimal("1"),
+        effective_from: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
+    ) -> BillableUnitPrice:
+        """Upsert one exact non-token billable-unit price."""
+
+        price = BillableUnitPrice(
+            provider=validated_text(provider, field="provider"),
+            sku=validated_text(sku, field="sku"),
+            unit=validated_text(unit, field="unit"),
+            rate_usd=validated_decimal(
+                rate_usd, field="rate_usd", maximum=MAX_RATE_USD_PER_MILLION
+            ),
+            pricing_quantity=validated_decimal(
+                pricing_quantity,
+                field="pricing_quantity",
+                maximum=MAX_BILLABLE_QUANTITY,
+                allow_zero=False,
+            ),
+            effective_from=parse_timestamp(effective_from, field="effective_from"),
+            price_plan=validated_text(price_plan, field="price_plan"),
+            service_tier=validated_text(service_tier, field="service_tier"),
+            region=validated_text(region, field="region"),
+        )
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO billable_unit_prices (
+                    provider, sku, price_plan, service_tier, region, effective_from,
+                    unit, rate_usd, pricing_quantity, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    provider, sku, price_plan, service_tier, region, effective_from
+                ) DO UPDATE SET
+                    unit = excluded.unit,
+                    rate_usd = excluded.rate_usd,
+                    pricing_quantity = excluded.pricing_quantity,
+                    created_at = excluded.created_at
+                """,
+                (
+                    price.provider,
+                    price.sku,
+                    price.price_plan,
+                    price.service_tier,
+                    price.region,
+                    format_timestamp(price.effective_from),
+                    price.unit,
+                    decimal_text(price.rate_usd),
+                    decimal_text(price.pricing_quantity),
+                    format_timestamp(utc_now()),
+                ),
+            )
+        return price
+
+    def list_billable_unit_prices(self) -> List[BillableUnitPrice]:
+        """List configured billable-unit prices in deterministic order."""
+
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM billable_unit_prices
+                ORDER BY provider, sku, price_plan, service_tier, region, effective_from
+                """
+            ).fetchall()
+        return [self._billable_unit_price_from_row(row) for row in rows]
+
+    def get_billable_unit_price(
+        self,
+        *,
+        provider: str,
+        sku: str,
+        at: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
+    ) -> BillableUnitPrice:
+        """Resolve the newest exact billable-unit price selector."""
+
+        normalized_provider = validated_text(provider, field="provider")
+        normalized_sku = validated_text(sku, field="sku")
+        normalized_plan = validated_text(price_plan, field="price_plan")
+        normalized_tier = validated_text(service_tier, field="service_tier")
+        normalized_region = validated_text(region, field="region")
+        timestamp = parse_timestamp(at, field="at")
+        with self._lock:
+            row = self.connection.execute(
+                """
+                SELECT * FROM billable_unit_prices
+                WHERE provider = ? AND sku = ? AND price_plan = ?
+                  AND service_tier = ? AND region = ? AND effective_from <= ?
+                ORDER BY effective_from DESC
+                LIMIT 1
+                """,
+                (
+                    normalized_provider,
+                    normalized_sku,
+                    normalized_plan,
+                    normalized_tier,
+                    normalized_region,
+                    format_timestamp(timestamp),
+                ),
+            ).fetchone()
+        if row is None:
+            raise PriceNotFoundError(
+                "no billable-unit price found for "
+                f"{normalized_provider}/{normalized_sku} plan={normalized_plan!r} "
+                f"tier={normalized_tier!r} region={normalized_region!r} "
+                f"at {format_timestamp(timestamp)}; add one with "
+                "`samsarix-cost unit-price set`"
+            )
+        return self._billable_unit_price_from_row(row)
+
+    @staticmethod
+    def _billable_unit_price_from_row(row: sqlite3.Row) -> BillableUnitPrice:
+        return BillableUnitPrice(
+            provider=row["provider"],
+            sku=row["sku"],
+            unit=row["unit"],
+            rate_usd=Decimal(row["rate_usd"]),
+            pricing_quantity=Decimal(row["pricing_quantity"]),
+            effective_from=parse_timestamp(row["effective_from"], field="effective_from"),
+            price_plan=row["price_plan"],
+            service_tier=row["service_tier"],
+            region=row["region"],
+        )
+
+    def estimate_charge(
+        self,
+        *,
+        provider: str,
+        sku: str,
+        quantity: DecimalInput,
+        at: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
+    ) -> ChargeCost:
+        """Calculate an exact non-token charge without recording it."""
+
+        normalized_quantity = validated_decimal(
+            quantity,
+            field="quantity",
+            maximum=MAX_BILLABLE_QUANTITY,
+            allow_zero=False,
+        )
+        price = self.get_billable_unit_price(
+            provider=provider,
+            sku=sku,
+            at=at,
+            price_plan=price_plan,
+            service_tier=service_tier,
+            region=region,
+        )
+        return ChargeCost(
+            quantity=normalized_quantity,
+            total_usd=money(normalized_quantity * price.rate_usd / price.pricing_quantity),
+            price=price,
+        )
+
+    def record_charge(
+        self,
+        *,
+        provider: str,
+        sku: str,
+        quantity: DecimalInput,
+        request_id: Optional[str] = None,
+        project: Optional[str] = None,
+        dimensions: Optional[Mapping[str, str]] = None,
+        occurred_at: Optional[Union[str, datetime]] = None,
+        price_plan: str = DEFAULT_PRICE_PLAN,
+        service_tier: str = DEFAULT_SERVICE_TIER,
+        region: str = DEFAULT_REGION,
+    ) -> ChargeRecordResult:
+        """Cost and atomically record one immutable non-token charge."""
+
+        normalized_provider = validated_text(provider, field="provider")
+        normalized_sku = validated_text(sku, field="sku")
+        normalized_quantity = validated_decimal(
+            quantity,
+            field="quantity",
+            maximum=MAX_BILLABLE_QUANTITY,
+            allow_zero=False,
+        )
+        normalized_request = (
+            validated_text(request_id, field="request_id") if request_id is not None else None
+        )
+        normalized_project = (
+            validated_text(project, field="project", reserved=GLOBAL_SCOPE)
+            if project is not None
+            else None
+        )
+        normalized_dimensions = validated_dimensions(dimensions)
+        normalized_plan = validated_text(price_plan, field="price_plan")
+        normalized_tier = validated_text(service_tier, field="service_tier")
+        normalized_region = validated_text(region, field="region")
+        explicit_occurred = occurred_at is not None
+        occurred = parse_timestamp(occurred_at, field="occurred_at")
+
+        with self._lock:
+            if normalized_request is not None:
+                existing = self._find_charge(
+                    normalized_request, normalized_provider, normalized_sku
+                )
+                if existing is not None:
+                    self._assert_same_charge(
+                        existing,
+                        quantity=normalized_quantity,
+                        project=normalized_project,
+                        dimensions=normalized_dimensions,
+                        price_plan=normalized_plan,
+                        service_tier=normalized_tier,
+                        region=normalized_region,
+                        occurred_at=occurred if explicit_occurred else None,
+                    )
+                    return ChargeRecordResult(existing, created=False)
+            cost = self.estimate_charge(
+                provider=normalized_provider,
+                sku=normalized_sku,
+                quantity=normalized_quantity,
+                at=occurred,
+                price_plan=normalized_plan,
+                service_tier=normalized_tier,
+                region=normalized_region,
+            )
+            event_id = f"chg_{uuid.uuid4().hex}"
+            recorded = utc_now()
+            try:
+                with self.connection:
+                    self.connection.execute(
+                        """
+                        INSERT INTO charge_events (
+                            event_id, request_id, occurred_at, recorded_at, provider, sku,
+                            project, price_plan, service_tier, region, quantity, unit,
+                            rate_usd, pricing_quantity, price_effective_from, total_cost
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            event_id,
+                            normalized_request,
+                            format_timestamp(occurred),
+                            format_timestamp(recorded),
+                            normalized_provider,
+                            normalized_sku,
+                            normalized_project,
+                            cost.price.price_plan,
+                            cost.price.service_tier,
+                            cost.price.region,
+                            decimal_text(cost.quantity),
+                            cost.price.unit,
+                            decimal_text(cost.price.rate_usd),
+                            decimal_text(cost.price.pricing_quantity),
+                            format_timestamp(cost.price.effective_from),
+                            decimal_text(cost.total_usd),
+                        ),
+                    )
+                    self.connection.executemany(
+                        "INSERT INTO charge_dimensions (event_id, key, value) VALUES (?, ?, ?)",
+                        ((event_id, key, value) for key, value in normalized_dimensions),
+                    )
+            except sqlite3.IntegrityError:
+                if normalized_request is None:
+                    raise
+                existing = self._find_charge(
+                    normalized_request, normalized_provider, normalized_sku
+                )
+                if existing is None:
+                    raise
+                self._assert_same_charge(
+                    existing,
+                    quantity=normalized_quantity,
+                    project=normalized_project,
+                    dimensions=normalized_dimensions,
+                    price_plan=normalized_plan,
+                    service_tier=normalized_tier,
+                    region=normalized_region,
+                    occurred_at=occurred if explicit_occurred else None,
+                )
+                return ChargeRecordResult(existing, created=False)
+        event = ChargeEvent(
+            event_id=event_id,
+            request_id=normalized_request,
+            occurred_at=occurred,
+            recorded_at=recorded,
+            provider=normalized_provider,
+            sku=normalized_sku,
+            project=normalized_project,
+            dimensions=normalized_dimensions,
+            cost=cost,
+        )
+        return ChargeRecordResult(event, created=True)
+
+    def _find_charge(self, request_id: str, provider: str, sku: str) -> Optional[ChargeEvent]:
+        row = self.connection.execute(
+            "SELECT * FROM charge_events WHERE request_id = ? AND provider = ? AND sku = ?",
+            (request_id, provider, sku),
+        ).fetchone()
+        return self._charge_event_from_row(row) if row is not None else None
+
+    def _assert_same_charge(
+        self,
+        event: ChargeEvent,
+        *,
+        quantity: Decimal,
+        project: Optional[str],
+        dimensions: Tuple[Tuple[str, str], ...],
+        price_plan: str,
+        service_tier: str,
+        region: str,
+        occurred_at: Optional[datetime],
+    ) -> None:
+        same = (
+            event.cost.quantity == quantity
+            and event.project == project
+            and event.dimensions == dimensions
+            and event.cost.price.price_plan == price_plan
+            and event.cost.price.service_tier == service_tier
+            and event.cost.price.region == region
+            and (occurred_at is None or event.occurred_at == occurred_at)
+        )
+        if not same:
+            raise DuplicateRequestError(
+                f"request_id {event.request_id!r} was already recorded for "
+                f"{event.provider}/{event.sku} with different charge data"
+            )
 
     def record(
         self,
@@ -1034,6 +1484,161 @@ class CostManager:
             ((event.event_id, key, value) for key, value in event.dimensions),
         )
 
+    def _charge_event_from_row(self, row: sqlite3.Row) -> ChargeEvent:
+        price = BillableUnitPrice(
+            provider=row["provider"],
+            sku=row["sku"],
+            unit=row["unit"],
+            rate_usd=Decimal(row["rate_usd"]),
+            pricing_quantity=Decimal(row["pricing_quantity"]),
+            effective_from=parse_timestamp(
+                row["price_effective_from"], field="price_effective_from"
+            ),
+            price_plan=row["price_plan"],
+            service_tier=row["service_tier"],
+            region=row["region"],
+        )
+        return ChargeEvent(
+            event_id=row["event_id"],
+            request_id=row["request_id"],
+            occurred_at=parse_timestamp(row["occurred_at"], field="occurred_at"),
+            recorded_at=parse_timestamp(row["recorded_at"], field="recorded_at"),
+            provider=row["provider"],
+            sku=row["sku"],
+            project=row["project"],
+            dimensions=self._charge_dimensions(row["event_id"]),
+            cost=ChargeCost(
+                quantity=Decimal(row["quantity"]),
+                total_usd=Decimal(row["total_cost"]),
+                price=price,
+            ),
+        )
+
+    def _charge_dimensions(self, event_id: str) -> Tuple[Tuple[str, str], ...]:
+        rows = self.connection.execute(
+            "SELECT key, value FROM charge_dimensions WHERE event_id = ? ORDER BY key",
+            (event_id,),
+        ).fetchall()
+        return tuple((row["key"], row["value"]) for row in rows)
+
+    def list_charges(
+        self,
+        *,
+        since: Optional[Union[str, datetime]] = None,
+        until: Optional[Union[str, datetime]] = None,
+        project: Optional[str] = None,
+    ) -> List[ChargeEvent]:
+        """Return immutable charge events in deterministic order."""
+
+        start = parse_timestamp(since, field="since") if since is not None else None
+        end = parse_timestamp(until, field="until") if until is not None else None
+        if start is not None and end is not None and start >= end:
+            raise ValidationError("since must be earlier than until")
+        conditions: List[str] = []
+        parameters: List[object] = []
+        if start is not None:
+            conditions.append("occurred_at >= ?")
+            parameters.append(format_timestamp(start))
+        if end is not None:
+            conditions.append("occurred_at < ?")
+            parameters.append(format_timestamp(end))
+        if project is not None:
+            conditions.append("project = ?")
+            parameters.append(validated_text(project, field="project", reserved=GLOBAL_SCOPE))
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self.connection.execute(
+                f"SELECT * FROM charge_events{where} ORDER BY occurred_at, event_id", parameters
+            ).fetchall()
+            return [self._charge_event_from_row(row) for row in rows]
+
+    def summarize_charges(
+        self,
+        *,
+        since: Optional[Union[str, datetime]] = None,
+        until: Optional[Union[str, datetime]] = None,
+        project: Optional[str] = None,
+        group_by: str = "none",
+        dimensions: Optional[Mapping[str, str]] = None,
+    ) -> List[ChargeSummaryRow]:
+        """Aggregate charge counts and USD without summing unlike unit quantities."""
+
+        valid_groups = ("none", "provider", "sku", "project", "day", "month")
+        dimension_group: Optional[str] = None
+        if group_by.startswith("dimension:"):
+            dimension_group = validated_text(
+                group_by.removeprefix("dimension:"), field="group dimension"
+            )
+        elif group_by not in valid_groups:
+            raise ValidationError(
+                f"group_by must be one of {', '.join(valid_groups)} or dimension:<key>"
+            )
+        start = parse_timestamp(since, field="since") if since is not None else None
+        end = parse_timestamp(until, field="until") if until is not None else None
+        if start is not None and end is not None and start >= end:
+            raise ValidationError("since must be earlier than until")
+        clauses: List[str] = []
+        parameters: List[object] = []
+        if start is not None:
+            clauses.append("charge_events.occurred_at >= ?")
+            parameters.append(format_timestamp(start))
+        if end is not None:
+            clauses.append("charge_events.occurred_at < ?")
+            parameters.append(format_timestamp(end))
+        if project is not None:
+            clauses.append("charge_events.project = ?")
+            parameters.append(validated_text(project, field="project", reserved=GLOBAL_SCOPE))
+        for key, value in validated_dimensions(dimensions):
+            clauses.append(
+                "EXISTS (SELECT 1 FROM charge_dimensions filtered_dimension "
+                "WHERE filtered_dimension.event_id = charge_events.event_id "
+                "AND filtered_dimension.key = ? AND filtered_dimension.value = ?)"
+            )
+            parameters.extend((key, value))
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        dimension_select = ""
+        select_parameters: List[object] = []
+        if dimension_group is not None:
+            dimension_select = (
+                "(SELECT value FROM charge_dimensions grouped_dimension "
+                "WHERE grouped_dimension.event_id = charge_events.event_id "
+                "AND grouped_dimension.key = ? LIMIT 1) AS dimension_value, "
+            )
+            select_parameters.append(dimension_group)
+        query = (
+            f"SELECT {dimension_select}occurred_at, provider, sku, project, total_cost "
+            f"FROM charge_events{where} ORDER BY occurred_at, event_id"
+        )
+        aggregates: "OrderedDict[str, Tuple[int, Decimal]]" = OrderedDict()
+        with self._lock:
+            for row in self.connection.execute(query, select_parameters + parameters):
+                key = self._charge_group_key(row, group_by)
+                count, total = aggregates.get(key, (0, Decimal("0")))
+                aggregates[key] = (count + 1, total + Decimal(row["total_cost"]))
+        return [
+            ChargeSummaryRow(group=key, charges=count, total_usd=money(total))
+            for key, (count, total) in aggregates.items()
+        ]
+
+    @staticmethod
+    def _charge_group_key(row: sqlite3.Row, group_by: str) -> str:
+        if group_by.startswith("dimension:"):
+            return (
+                str(row["dimension_value"])
+                if row["dimension_value"] is not None
+                else "(unassigned)"
+            )
+        if group_by == "provider":
+            return str(row["provider"])
+        if group_by == "sku":
+            return f"{row['provider']}/{row['sku']}"
+        if group_by == "project":
+            return str(row["project"]) if row["project"] is not None else "(unassigned)"
+        if group_by in ("day", "month"):
+            occurred = parse_timestamp(row["occurred_at"], field="occurred_at")
+            return occurred.strftime("%Y-%m-%d" if group_by == "day" else "%Y-%m")
+        return "all"
+
     def summarize(
         self,
         *,
@@ -1226,7 +1831,15 @@ class CostManager:
                 project=scope_project,
                 group_by="none",
             )
-            spent = summaries[0].total_usd if summaries else Decimal("0")
+            charge_summaries = self.summarize_charges(
+                since=period_start,
+                until=period_end,
+                project=scope_project,
+                group_by="none",
+            )
+            spent = (summaries[0].total_usd if summaries else Decimal("0")) + (
+                charge_summaries[0].total_usd if charge_summaries else Decimal("0")
+            )
             limit = Decimal(row["limit_usd"])
             projected = money(spent + estimated)
             statuses.append(

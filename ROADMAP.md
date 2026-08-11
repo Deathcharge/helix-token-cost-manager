@@ -27,7 +27,7 @@ Current hardening backlog:
 - Operator pricing can be stale/wrong while remaining internally consistent.
 - Advisory budgets cannot reserve spend atomically across distributed callers.
 - Portable event import/export is present; full database backup/restore, retention, signatures, and an external append-only audit log are not.
-- Total-level reconciliation is present; provider invoice-file adapters, non-token charges, forecasting, and anomaly detection are not.
+- Total-level token reconciliation is present; provider invoice-file adapters, mixed-event portable ledgers, forecasting, and anomaly detection are not.
 - Public API/database schema creates ongoing compatibility and migration duties.
 - Owner must approve package namespace, Apache licensing authority, tag, and trusted publishing.
 
@@ -35,7 +35,7 @@ Current hardening backlog:
 
 1. **Interoperable ingestion and allocation — landed:** OpenAI, Anthropic, and OpenTelemetry normalization; cache-read/cache-write accounting; schema `1` to `2` migration; bounded dimensions; dimension filters/groups; CLI JSON ingestion.
 2. **Portable ledger and reconciliation — landed:** deterministic JSONL/CSV export, atomic artifact writes and transactional restore, import validation/dry-run, provider-invoice comparison, and stable artifact digests. Provider-specific invoice-file adapters and full database backup remain follow-up work.
-3. **Pricing fidelity — active:** exact threshold, service-tier, region, and negotiated-plan selectors are implemented with immutable provenance and backward-compatible migration. Non-token tool/runtime quantities remain follow-up work.
+3. **Pricing fidelity — landed:** exact threshold, service-tier, region, and negotiated-plan selectors plus generic non-token provider/SKU quantities are implemented with immutable provenance and backward-compatible migration. Mixed-event portable ledgers remain follow-up work.
 4. **Guardrails:** atomic local reservations, alerts, forecasts, anomalies, and optimization recommendations with explainable evidence.
 5. **Adoption:** one Samsarix consumer contract, production signal, published package provenance, support window, and migration policy.
 

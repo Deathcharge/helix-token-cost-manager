@@ -12,7 +12,7 @@ Include the affected version/commit, operating system and Python version, the ex
 
 ## Product threat boundary
 
-This package is a local library and CLI. It opens an operator-selected SQLite path and accepts operator- or application-supplied provider/model identifiers, price-plan/tier/region selectors, token counts and thresholds, timestamps, request IDs, project labels, rates, and budget limits. It does not listen on a network port, call providers, execute plugins, deserialize arbitrary Python objects, or require credentials.
+This package is a local library and CLI. It opens an operator-selected SQLite path and accepts operator- or application-supplied provider/model/SKU/unit identifiers, price-plan/tier/region selectors, token counts, decimal quantities and thresholds, timestamps, request IDs, project labels, rates, and budget limits. It does not listen on a network port, call providers, execute plugins, deserialize arbitrary Python objects, or require credentials.
 
 Security invariants:
 
@@ -20,7 +20,7 @@ Security invariants:
 - All SQL values are parameterized; selectable report dimensions are fixed by an allowlist.
 - Untrusted scalar inputs are finite, length-bounded, type-checked, and range-checked.
 - Unknown or uncovered price-book selectors fail closed, overlapping same-version threshold rules are rejected, and historical event prices remain immutable.
-- A request ID cannot be reused for a different usage tuple.
+- A request ID cannot be reused for a different token usage tuple; charge idempotency is scoped to request ID, provider, and SKU so one provider request may contain multiple billable SKUs.
 - A newer database schema is never modified by an older package.
 - Portable ledger imports are size/record bounded, optionally digest-verified, fully validated before a transaction, and reject inconsistent cost arithmetic or identity conflicts.
 - SHA-256 detects artifact changes but does not prove authorship; protect ledgers and error files with the same filesystem controls as the database.

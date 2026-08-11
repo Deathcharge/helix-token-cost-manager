@@ -20,6 +20,7 @@ MAX_TEXT_LENGTH = 200
 MAX_DIMENSIONS = 32
 MAX_TOKENS = 1_000_000_000_000
 MAX_RATED_INPUT_TOKENS = MAX_TOKENS * 3
+MAX_BILLABLE_QUANTITY = Decimal("1000000000000000000")
 GLOBAL_SCOPE = "*"
 DEFAULT_PRICE_PLAN = "list"
 DEFAULT_SERVICE_TIER = "standard"
@@ -217,6 +218,54 @@ class ModelPrice:
 
 
 @dataclass(frozen=True)
+class BillableUnitPrice:
+    """A time-versioned USD price for one provider billable SKU."""
+
+    provider: str
+    sku: str
+    unit: str
+    rate_usd: Decimal
+    pricing_quantity: Decimal
+    effective_from: datetime
+    price_plan: str = DEFAULT_PRICE_PLAN
+    service_tier: str = DEFAULT_SERVICE_TIER
+    region: str = DEFAULT_REGION
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-safe representation."""
+
+        return {
+            "provider": self.provider,
+            "sku": self.sku,
+            "unit": self.unit,
+            "rate_usd": decimal_text(self.rate_usd),
+            "pricing_quantity": decimal_text(self.pricing_quantity),
+            "effective_from": format_timestamp(self.effective_from),
+            "price_plan": self.price_plan,
+            "service_tier": self.service_tier,
+            "region": self.region,
+        }
+
+
+@dataclass(frozen=True)
+class ChargeCost:
+    """An exact non-token charge using a snapshotted billable-unit price."""
+
+    quantity: Decimal
+    total_usd: Decimal
+    price: BillableUnitPrice
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-safe representation."""
+
+        return {
+            "quantity": decimal_text(self.quantity),
+            "total_usd": decimal_text(self.total_usd),
+            "price": self.price.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class CostBreakdown:
     """An exact cost calculation using a snapshotted model price."""
 
@@ -289,6 +338,67 @@ class RecordResult:
         """Return a JSON-safe representation."""
 
         return {"created": self.created, "event": self.event.to_dict()}
+
+
+@dataclass(frozen=True)
+class ChargeEvent:
+    """One immutable, costed non-token billable-unit event."""
+
+    event_id: str
+    request_id: Optional[str]
+    occurred_at: datetime
+    recorded_at: datetime
+    provider: str
+    sku: str
+    project: Optional[str]
+    dimensions: Tuple[Tuple[str, str], ...]
+    cost: ChargeCost
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-safe representation."""
+
+        return {
+            "event_id": self.event_id,
+            "request_id": self.request_id,
+            "occurred_at": format_timestamp(self.occurred_at),
+            "recorded_at": format_timestamp(self.recorded_at),
+            "provider": self.provider,
+            "sku": self.sku,
+            "project": self.project,
+            "dimensions": dict(self.dimensions),
+            "cost": self.cost.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class ChargeRecordResult:
+    """The immutable charge event plus whether this call created it."""
+
+    event: ChargeEvent
+    created: bool
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-safe representation."""
+
+        return {"created": self.created, "event": self.event.to_dict()}
+
+
+@dataclass(frozen=True)
+class ChargeSummaryRow:
+    """Aggregated non-token charges and cost for one report group."""
+
+    group: str
+    charges: int
+    total_usd: Decimal
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-safe representation."""
+
+        return {
+            "group": self.group,
+            "charges": self.charges,
+            "total_usd": decimal_text(self.total_usd),
+        }
 
 
 @dataclass(frozen=True)
