@@ -46,7 +46,7 @@ Use the service tier actually reported by the provider when available. OpenAI do
 
 Current provider documentation shows that pricing is not a single model rate:
 
-- [OpenAI API pricing](https://openai.com/api/pricing/) distinguishes standard, batch, priority, flex, long-context, and data-residency pricing. Its [Responses API contract](https://platform.openai.com/docs/api-reference/responses-streaming) reports the service tier actually used.
+- [OpenAI API pricing](https://developers.openai.com/api/docs/pricing) distinguishes standard, batch, priority, flex, long-context, and data-residency pricing. Its [Responses API contract](https://platform.openai.com/docs/api-reference/responses-streaming) reports the service tier actually used.
 - [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) documents long-context thresholds, batch discounts, cache rates, inference geography premiums, marketplace units, and negotiated discounts.
 - [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) distinguishes standard, batch, flex, priority, cache storage, and non-token grounding charges.
 - [FOCUS 1.2](https://focus.finops.org/focus-specification/v1-2/) separates list and contracted unit price, pricing quantity/unit, region, and effective cost.

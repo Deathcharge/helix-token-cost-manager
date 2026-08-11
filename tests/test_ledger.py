@@ -109,6 +109,31 @@ def test_jsonl_v1_import_defaults_price_book_selectors(tmp_path) -> None:  # typ
     assert import_jsonl(legacy) == events
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "price_plan",
+        "service_tier",
+        "region",
+        "price_input_token_min",
+        "price_input_token_max",
+    ),
+)
+def test_jsonl_v2_requires_price_book_provenance(tmp_path, field: str) -> None:  # type: ignore[no-untyped-def]
+    with CostManager(tmp_path / "ledger.sqlite3") as manager:
+        lines = [
+            json.loads(line)
+            for line in export_jsonl(_events(manager)).content.decode().splitlines()
+        ]
+    lines[1]["record"].pop(field)
+    content = (
+        "\n".join(json.dumps(line, sort_keys=True, separators=(",", ":")) for line in lines) + "\n"
+    ).encode()
+
+    with pytest.raises(ValidationError, match=f"missing '{field}'"):
+        import_jsonl(content)
+
+
 def test_csv_export_is_rfc_compatible_and_exact(tmp_path) -> None:  # type: ignore[no-untyped-def]
     with CostManager(tmp_path / "ledger.sqlite3") as manager:
         events = _events(manager)

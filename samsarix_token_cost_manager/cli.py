@@ -34,6 +34,9 @@ from .ledger import (
 )
 from .manager import SCHEMA_VERSION, VALID_GROUPS, VALID_PERIODS, CostManager, default_database_path
 from .models import (
+    DEFAULT_PRICE_PLAN,
+    DEFAULT_REGION,
+    DEFAULT_SERVICE_TIER,
     BudgetStatus,
     RecordResult,
     SummaryRow,
@@ -778,6 +781,15 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                 if arguments.provider or arguments.model:
                     raise ValidationError(
                         "amount cannot be combined with provider/model token estimation"
+                    )
+                if (
+                    arguments.price_plan != DEFAULT_PRICE_PLAN
+                    or arguments.service_tier != DEFAULT_SERVICE_TIER
+                    or arguments.region != DEFAULT_REGION
+                ):
+                    raise ValidationError(
+                        "amount cannot be combined with price-plan, service-tier, or region "
+                        "selectors"
                     )
                 estimate = validated_decimal(arguments.amount, field="amount")
             else:

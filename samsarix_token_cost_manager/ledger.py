@@ -562,6 +562,7 @@ def import_jsonl(content: bytes, *, expected_sha256: str | None = None) -> List[
     )
     if manifest not in supported_manifests:
         raise ValidationError("unsupported ledger manifest or format version")
+    legacy = manifest["format_version"] == 1
     if len(lines) - 1 > MAX_LEDGER_RECORDS:
         raise ValidationError(f"ledger must not exceed {MAX_LEDGER_RECORDS} records")
     events: List[UsageEvent] = []
@@ -576,6 +577,15 @@ def import_jsonl(content: bytes, *, expected_sha256: str | None = None) -> List[
         if not isinstance(record, dict):
             raise ValidationError(f"ledger line {line_number} record must be an object")
         try:
+            if not legacy:
+                for field in (
+                    "price_plan",
+                    "service_tier",
+                    "region",
+                    "price_input_token_min",
+                    "price_input_token_max",
+                ):
+                    _required(record, field)
             events.append(record_event(record))
         except ValidationError as exc:
             raise ValidationError(f"ledger line {line_number}: {exc}") from exc

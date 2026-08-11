@@ -27,7 +27,7 @@ Current hardening backlog:
 - Operator pricing can be stale/wrong while remaining internally consistent.
 - Advisory budgets cannot reserve spend atomically across distributed callers.
 - Portable event import/export is present; full database backup/restore, retention, signatures, and an external append-only audit log are not.
-- Total-level reconciliation is present; provider invoice-file adapters, tiered/context pricing, non-token charges, forecasting, and anomaly detection are not.
+- Total-level reconciliation is present; provider invoice-file adapters, non-token charges, forecasting, and anomaly detection are not.
 - Public API/database schema creates ongoing compatibility and migration duties.
 - Owner must approve package namespace, Apache licensing authority, tag, and trusted publishing.
 
