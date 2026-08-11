@@ -1,6 +1,6 @@
 # Productization Record
 
-Last updated: July 28, 2026  
+Last updated: August 11, 2026  
 Baseline revision: `16685f129672c97a630ee04066cb8eb379bd1531` (`main`, matching `origin/main`)  
 Working-tree baseline: clean; no pre-existing tracked or untracked changes
 
